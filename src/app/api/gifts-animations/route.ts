@@ -19,7 +19,7 @@ export async function GET() {
         }
         const data = fs.readFileSync(dataFilePath, 'utf8');
         return NextResponse.json(JSON.parse(data));
-    } catch (e) {
+    } catch {
         return NextResponse.json([]);
     }
 }
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
         const anims = await req.json();
         fs.writeFileSync(dataFilePath, JSON.stringify(anims, null, 2), 'utf8');
         return NextResponse.json({ success: true });
-    } catch (e) {
+    } catch {
         return NextResponse.json({ error: 'Failed to save' }, { status: 500 });
     }
 }

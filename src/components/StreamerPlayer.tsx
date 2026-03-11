@@ -15,15 +15,23 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         currentState, setState,
         isThinking, currentEvent, incomingMessage, clearEvent,
         layerColors, fetchLayerColors,
-        idleAnimations,
-        groups, fetchMonitorConfig,
-        giftAnimations, giftQueue, consumeGiftQueueItem
+        idleAnimations, fetchIdleAnimations,
+        groups, fetchGroups,
+        fetchMonitorConfig,
+        giftAnimations, fetchGiftAnimations,
+        fetchEmotionGroups,
+        giftQueue, consumeGiftQueueItem,
+        setActiveGiftItem
     } = usePlayerStore();
 
     useEffect(() => {
         fetchLayerColors();
         fetchMonitorConfig();
-    }, [fetchLayerColors, fetchMonitorConfig]);
+        fetchGroups();
+        fetchIdleAnimations();
+        fetchGiftAnimations();
+        fetchEmotionGroups();
+    }, [fetchLayerColors, fetchMonitorConfig, fetchGroups, fetchIdleAnimations, fetchGiftAnimations, fetchEmotionGroups]);
 
     // Refs для всех видео слоев
     const idleRef = useRef<HTMLVideoElement>(null);
@@ -100,23 +108,42 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             }
 
             // --- GIFTS LOGIC ---
-            if (currentState === 'idle' && giftQueue.length > 0 && giftAnimations.length > 0 && idleVideo) {
+            if (currentState === 'idle' && giftQueue.length > 0 && idleVideo) {
                 const now = idleVideo.currentTime;
                 const targetGift = giftQueue[0];
 
                 let bestAnim: GiftAnimation | null = null;
-                const matches = giftAnimations.filter((a: GiftAnimation) =>
-                    (a.targetTier === targetGift.tier || a.targetTier === 'universal') &&
-                    a.minCombo <= targetGift.count
-                );
+                if (giftAnimations.length > 0) {
+                    const matches = giftAnimations.filter((a: GiftAnimation) =>
+                        a.targetTier === targetGift.tier && a.minCombo <= targetGift.count
+                    );
 
-                if (matches.length > 0) {
-                    matches.sort((a: GiftAnimation, b: GiftAnimation) => {
-                        if (b.minCombo !== a.minCombo) return b.minCombo - a.minCombo;
-                        if (a.targetTier !== b.targetTier) return a.targetTier === targetGift.tier ? -1 : 1;
-                        return 0;
-                    });
-                    bestAnim = matches[0];
+                    if (matches.length > 0) {
+                        matches.sort((a: GiftAnimation, b: GiftAnimation) => {
+                            return b.minCombo - a.minCombo;
+                        });
+                        
+                        const highestCombo = matches[0].minCombo;
+                        const bestOptions = matches.filter((a: GiftAnimation) => a.minCombo === highestCombo);
+                        let minDiff = Infinity;
+
+                        for (const anim of bestOptions) {
+                            if (anim.isPriority) {
+                                bestAnim = anim;
+                                break;
+                            }
+
+                            let diff = anim.triggerTime - now;
+                            // Смещение на -0.3, чтобы когда мы внутри окна триггера,
+                            // анимация не перескакивала на "лучшую будущую".
+                            if (diff < -0.3) diff += idleVideo.duration || 10; 
+
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                bestAnim = anim;
+                            }
+                        }
+                    }
                 }
 
                 if (bestAnim) {
@@ -127,6 +154,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                             idleVideo.pause();
                             setState('gift_anim');
                             setActiveGiftAnim(bestAnim);
+                            setActiveGiftItem(targetGift);
                             consumeGiftQueueItem(targetGift.id, bestAnim.minCombo);
 
                             if (giftAnimRef.current) {
@@ -136,16 +164,18 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                             }
                             return;
                         } else {
-                            if (giftAnimRef.current && giftAnimRef.current.src.indexOf(bestAnim.video) === -1) {
+                            if (giftAnimRef.current && !giftAnimRef.current.src.endsWith(bestAnim.video)) {
+                                console.log(`[Player] Preloading gift video: ${bestAnim.video}`);
                                 giftAnimRef.current.src = `/assets/${bestAnim.video}`;
                                 giftAnimRef.current.load();
                             }
 
-                            if (now >= bestAnim.triggerTime && now <= bestAnim.triggerTime + 0.15) {
+                            if (now >= bestAnim.triggerTime && now <= bestAnim.triggerTime + 0.3) {
                                 console.log(`[Player] Normal Gift Trigger @${bestAnim.triggerTime}s! ${bestAnim.id}`);
                                 idleVideo.pause();
                                 setState('gift_anim');
                                 setActiveGiftAnim(bestAnim);
+                                setActiveGiftItem(targetGift);
                                 consumeGiftQueueItem(targetGift.id, bestAnim.minCombo);
 
                                 if (giftAnimRef.current) {
@@ -157,8 +187,31 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                         }
                     }
                 } else {
-                    console.warn(`[Player] No gift anim found for tier '${targetGift.tier}'. Discarding gift.`);
+                    // Фолбэк: выводим 100% только на Виртуальный Монитор (видео нет/не подходит)
+                    console.log(`[Player] No exact video found for tier '${targetGift.tier}'. Using virtual monitor fallback.`);
+                    
+                    idleVideo.pause();
+                    setState('gift_anim');
+                    setActiveGiftAnim(null); // Убеждаемся что нет активной webm
+                    setActiveGiftItem(targetGift);
                     consumeGiftQueueItem(targetGift.id, targetGift.count);
+                    
+                    // Показываем плашку 4 секунды и возвращаемся
+                    setTimeout(() => {
+                        const state = usePlayerStore.getState();
+                        // Проверяем, что не перебили стейт разговором или паникой
+                        if (state.currentState === 'gift_anim') {
+                            console.log(`[Player] Fallback gift ended, returning to idle.`);
+                            state.setState('idle');
+                            state.setActiveGiftItem(null);
+                            setActiveGiftAnim(null);
+                            if (idleRef.current) {
+                                idleRef.current.play().catch(console.error);
+                            }
+                        }
+                    }, 4000);
+                    
+                    return;
                 }
             }
 
@@ -281,22 +334,24 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                         }
                     }
                 }
+            }
 
-                // Если мы в релаксе (idle), и НЕТ эвента, проверяем рандомные Idle Animations
-                if (currentState === 'idle' && !currentEvent && !isThinking && idleVideo && idleAnimations.length > 0) {
-                    const now = idleVideo.currentTime;
+            // Если мы в релаксе (idle), и НЕТ эвента, проверяем рандомные Idle Animations
+            if (currentState === 'idle' && !currentEvent && !isThinking && idleVideo && idleAnimations.length > 0) {
+                const now = idleVideo.currentTime;
 
                     // 1. Пытаемся заранее выбрать (preload) анимацию, если её ещё нет на горизонте
                     if (!pendingIdleAnim) {
                         for (const anim of idleAnimations) {
                             // Окно для выбора (за пару секунд ДО самого триггера)
                             if (now < anim.triggerTime && anim.triggerTime - now < 3) {
-                                if (Math.abs(lastIdleTriggerTimeRef.current - anim.triggerTime) > 1) {
+                                // Only roll once per loop per animation trigger time
+                                if (Math.abs(lastIdleTriggerTimeRef.current - anim.triggerTime) > 0.5) {
                                     lastIdleTriggerTimeRef.current = anim.triggerTime;
 
                                     const roll = Math.random() * 100;
                                     if (roll <= anim.chance) {
-                                        console.log(`[Player] Pre-rolled / Pending Idle Anim: ${anim.id}`);
+                                        console.log(`[Player] Pre-rolled / Pending Idle Anim: ${anim.id} (Roll: ${roll.toFixed(1)} <= ${anim.chance})`);
                                         setPendingIdleAnim(anim);
 
                                         if (idleAnimRef.current) {
@@ -304,6 +359,8 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                                             idleAnimRef.current.load();
                                         }
                                         break;
+                                    } else {
+                                        console.log(`[Player] Idle Anim Skipped: ${anim.id} (Roll: ${roll.toFixed(1)} > ${anim.chance})`);
                                     }
                                 }
                             }
@@ -332,10 +389,11 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                         } else if (now > pendingIdleAnim.triggerTime + 0.3) {
                             // Срок годности ивента прошел (чтоб не залипало если промахнулись)
                             setPendingIdleAnim(null);
-                        }
                     }
                 }
             }
+
+            animationFrameId = requestAnimationFrame(checkTime);
         }; // End of checkTime
 
         if (currentState === 'idle') {
@@ -345,7 +403,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         return () => {
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
         };
-    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, giftAnimations, giftQueue, setState, consumeGiftQueueItem, activeEmotionAnim]);
+    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, giftAnimations, giftQueue, setState, consumeGiftQueueItem, activeEmotionAnim, setActiveGiftItem]);
 
 
     // Обработчики завершения видео/аудио
@@ -436,16 +494,69 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         }
     };
 
-    const getLayerStyle = (slotId: string) => {
+    const getLayerColorFilter = (colors: { temperature?: number, tint?: number, hue?: number, saturate?: number, brightness?: number, contrast?: number } | undefined, slotId: string) => {
         const defaultColors = { temperature: 0, tint: 0, hue: 0, saturate: 1, brightness: 1, contrast: 1 };
-        const s = { ...defaultColors, ...(layerColors[slotId] || {}) };
+        const s = { ...defaultColors, ...(colors || {}) };
         return {
             filter: `url(#temp-${slotId}) hue-rotate(${s.hue}deg) saturate(${s.saturate}) brightness(${s.brightness}) contrast(${s.contrast})`
         };
     };
 
+    const getLayerStyle = (layerId: string) => {
+        if (layerId === 'transIn' || layerId === 'talk' || layerId === 'transOut') {
+            const dynamicId = `${activeGroup?.id}_${layerId}`;
+            return getLayerColorFilter(layerColors[dynamicId], layerId);
+        }
+        return getLayerColorFilter(layerColors[layerId], layerId);
+    };
+
+    const { bgmFile, bgmVolume, fetchBgmSettings } = usePlayerStore();
+
+    useEffect(() => {
+        fetchBgmSettings();
+    }, [fetchBgmSettings]);
+
+    const bgmRef = useRef<HTMLAudioElement>(null);
+
+    useEffect(() => {
+        if (bgmRef.current) {
+            bgmRef.current.volume = bgmVolume;
+        }
+    }, [bgmVolume, bgmFile]);
+
+    // Обработка политик автоплея браузера
+    useEffect(() => {
+        const tryPlayBgm = () => {
+            if (bgmRef.current && bgmRef.current.paused && bgmFile) {
+                bgmRef.current.play().catch(e => console.warn("BGM AutoPlay prevented:", e));
+            }
+        };
+
+        // Пытаемся проиграть сразу (вдруг браузер разрешит без клика)
+        tryPlayBgm();
+
+        // Если не разрешил - ждем любого клика/нажатия клавиши по окну
+        window.addEventListener('click', tryPlayBgm);
+        window.addEventListener('keydown', tryPlayBgm);
+
+        return () => {
+            window.removeEventListener('click', tryPlayBgm);
+            window.removeEventListener('keydown', tryPlayBgm);
+        };
+    }, [bgmFile]);
+
     return (
         <div className="relative w-full h-screen bg-black overflow-hidden flex items-center justify-center">
+
+            {bgmFile && (
+                <audio
+                    ref={bgmRef}
+                    src={`/assets/${bgmFile}`}
+                    loop
+                    autoPlay
+                    className="hidden"
+                />
+            )}
 
             {/* SVG фильтры цвета */}
             <svg className="hidden">
@@ -507,7 +618,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 <video
                     ref={idleAnimRef}
                     playsInline
-                    muted
+                    muted={activeIdleAnim?.isMuted !== false}
                     className={`absolute inset-0 w-full h-full object-contain transition-none ${currentState === 'idle_anim' ? 'z-25 opacity-100' : 'z-0 opacity-0'}`}
                     style={activeIdleAnim ? getLayerStyle(activeIdleAnim.id) : {}}
                     onEnded={() => {
@@ -525,8 +636,8 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 <video
                     ref={giftAnimRef}
                     playsInline
-                    muted={currentState === 'gift_anim'} // For emotions we play voice, video can remain muted if it has no audio. We overlay TTS manually.
-                    className={`absolute inset-0 w-full h-full object-contain transition-none ${(currentState === 'gift_anim' || currentState === 'emotion_anim') ? 'z-26 opacity-100' : 'z-0 opacity-0'}`}
+                    muted={currentState === 'emotion_anim' ? (activeEmotionAnim?.isMuted !== false) : (activeGiftAnim?.isMuted !== false)}
+                    className={`absolute inset-0 w-full h-full object-contain transition-none ${((currentState === 'gift_anim' && activeGiftAnim) || currentState === 'emotion_anim') ? 'z-26 opacity-100' : 'z-0 opacity-0'}`}
                     style={(activeGiftAnim || activeEmotionAnim) ? getLayerStyle((activeGiftAnim?.id || activeEmotionAnim?.id)!) : {}}
                     onEnded={() => {
                         if (currentState === 'emotion_anim') {
@@ -536,6 +647,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                             setState('idle');
                             const isPriority = activeGiftAnim?.isPriority;
                             setActiveGiftAnim(null);
+                            setActiveGiftItem(null);
                             if (idleRef.current) {
                                 if (!isPriority) {
                                     idleRef.current.currentTime = activeGiftAnim?.triggerTime || 0;
@@ -550,6 +662,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 <video
                     ref={transInRef}
                     playsInline
+                    muted={activeGroup?.transInMuted !== false}
                     style={getLayerStyle('transIn')}
                     onEnded={handleTransInEnded}
                     className={`absolute inset-0 w-full h-full object-contain ${currentState === 'trans_in' || currentState === 'talk' ? 'z-30 opacity-100' : 'z-0 opacity-0'}`}
@@ -559,6 +672,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 <video
                     ref={talkRef}
                     playsInline
+                    muted={activeGroup?.talkMuted !== false}
                     style={getLayerStyle('talk')}
                     onEnded={handleTalkLoopEnded}
                     className={`absolute inset-0 w-full h-full object-contain ${currentState === 'talk' || currentState === 'trans_out' ? 'z-40 opacity-100' : 'z-0 opacity-0'}`}
@@ -568,6 +682,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 <video
                     ref={transOutRef}
                     playsInline
+                    muted={activeGroup?.transOutMuted !== false}
                     style={getLayerStyle('transOut')}
                     onEnded={handleTransOutEnded}
                     className={`absolute inset-0 w-full h-full object-contain ${currentState === 'trans_out' ? 'z-50 opacity-100' : 'z-0 opacity-0'}`}
@@ -580,14 +695,14 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     style={getLayerStyle('idle')} // Re-use idle color grading or transIn if preferred
                     className={`absolute inset-0 w-full h-full object-contain transition-opacity duration-300 ${currentState === 'panic' ? 'z-60 opacity-100' : 'z-0 opacity-0 pointer-events-none'}`}
                 />
-
-                {/* 5. VIRTUAL MONITOR LAYER */}
-                <VirtualMonitor />
             </div>
+
+            {/* 6. VIRTUAL MONITOR LAYER */}
+            <VirtualMonitor />
 
             <audio ref={audioRef} onEnded={handleAudioEnded} className="hidden" />
 
-            <div className={`absolute bottom-10 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center w-full max-w-sm px-4 pointer-events-none transition-all duration-500 transform ${isSubtitleVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+            <div className={`absolute bottom-10 left-1/2 -translate-x-1/2 z-[70] flex flex-col items-center w-full max-w-sm px-4 pointer-events-none transition-all duration-500 transform ${isSubtitleVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
 
                 {incomingMessage && (
                     <div className="bg-[#00ffcc] text-black font-bold text-xs uppercase px-3 py-1 rounded-t-lg shadow-lg self-start ml-2 mb-[-1px] z-30">

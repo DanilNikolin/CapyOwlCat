@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { usePlayerStore } from '@/store/usePlayerStore';
 import { getTransformMatrix } from '@/utils/math';
-import { Cpu, Radio, Volume2, Waves } from 'lucide-react'; // Массивные иконки
+import { Cpu, Radio, Volume2, Waves, Gift } from 'lucide-react'; // Массивные иконки
 
 const IDLE_MESSAGES = [
     "[ STATUS: LISTENING ]",
@@ -13,7 +13,7 @@ const IDLE_MESSAGES = [
 ];
 
 export default function VirtualMonitor() {
-    const { monitorConfig, isThinking, currentState } = usePlayerStore();
+    const { monitorConfig, isThinking, currentState, incomingMessage, activeGiftItem } = usePlayerStore();
 
     // We can add some internal rotating logic or states here if needed
     const [idleTextIndex, setIdleTextIndex] = useState(0);
@@ -112,6 +112,35 @@ export default function VirtualMonitor() {
                                         }}
                                     />
                                 ))}
+                            </div>
+                        </div>
+                    ) : currentState === 'gift_anim' ? (
+                        /* STATE: GIFT ANIMATION */
+                        <div className="flex flex-col items-center gap-4 text-[#ffcc00]">
+                            <div className="relative">
+                                <Gift className="w-16 h-16 md:w-20 md:h-20 text-[#ffcc00] animate-bounce drop-shadow-[0_0_15px_rgba(255,204,0,0.8)]" strokeWidth={1.5} />
+                                <div className="absolute inset-0 bg-[#ffcc00]/20 animate-ping rounded-full mix-blend-screen" />
+                            </div>
+                            
+                            <div className="flex flex-col items-center z-10">
+                                <span className="font-bold tracking-widest text-[#ffcc00] text-sm md:text-base drop-shadow-[0_0_10px_rgba(0,0,0,1)] bg-black/60 border border-[#ffcc00]/50 px-3 py-1 uppercase mb-2 backdrop-blur-md">
+                                    NEW GIFT DETECTED
+                                </span>
+                                <span className="text-xl md:text-2xl font-black uppercase tracking-tight drop-shadow-[0_2px_15px_rgba(0,0,0,1)] bg-black/40 px-4 py-2 rounded-lg backdrop-blur-md border border-[#ffcc00]/30 text-center">
+                                    {activeGiftItem?.username ? (
+                                        <>
+                                            <span className="text-white drop-shadow-md">{activeGiftItem.username}</span><br/>
+                                            sent <span className="text-[#ff5500] drop-shadow-[0_0_8px_rgba(255,85,0,0.8)]">{activeGiftItem.giftName || "a Gift"}</span>!
+                                        </>
+                                    ) : incomingMessage && incomingMessage.type === 'gift' ? (
+                                        <>
+                                            <span className="text-white drop-shadow-md">{incomingMessage.username}</span><br/>
+                                            sent <span className="text-[#ff5500] drop-shadow-[0_0_8px_rgba(255,85,0,0.8)]">{incomingMessage.giftName}</span>!
+                                        </>
+                                    ) : (
+                                        <span className="text-[#ffcc00]">GIFT RECEIVED!</span>
+                                    )}
+                                </span>
                             </div>
                         </div>
                     ) : (

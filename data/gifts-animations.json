@@ -1,10 +1,20 @@
 [
   {
-    "id": "giftanim_1773211675862",
-    "triggerTime": 2,
-    "video": "rose.webm",
+    "id": "giftanim_1773232047996",
+    "triggerTime": 0.04,
+    "video": "giftanim_1773232047996.webm",
     "targetTier": "low",
     "minCombo": 1,
-    "isPriority": false
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773233760168",
+    "triggerTime": 5.13,
+    "video": "giftanim_1773233760168.webm",
+    "targetTier": "low",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
   }
 ]

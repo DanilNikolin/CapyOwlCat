@@ -73,7 +73,6 @@ export default function MockTrigger() {
     const vipQueueRef = useRef<GiftEvent[]>([]);
     const spamBlacklistRef = useRef<{ [username: string]: number }>({});
     const userMsgTimestampsRef = useRef<{ [username: string]: number[] }>({});
-    const consecutiveVipsRef = useRef(0);
 
     // History State
     const [chatHistory, setChatHistory] = useState<{ role: string, content: string }[]>([]);
@@ -168,7 +167,7 @@ export default function MockTrigger() {
                                 if (diamonds >= 100 && diamonds < 1000) tier = 'mid';
                                 else if (diamonds >= 1000) tier = 'high';
 
-                                enqueueGift(tier);
+                                enqueueGift(tier, e.data.uniqueId, e.data.giftName);
 
                                 // VIP-очередь больше не юзаем для подарков, они идут напрямую в плеер.
                             } else if (e.type === 'chat' && e.data?.comment && e.data?.uniqueId) {
@@ -306,6 +305,7 @@ export default function MockTrigger() {
 
         try {
             let textReply = "";
+            let emotionTarget: string | undefined = undefined;
 
             try {
                 // -- Шаг 1. Генерим текст через xAI --
@@ -323,6 +323,7 @@ export default function MockTrigger() {
                 } else {
                     const data = await grokRes.json();
                     textReply = data.reply || "Grok returned no content";
+                    emotionTarget = data.emotionTarget;
                     fetchHistory(); // Обновляем историю после ответа
                 }
             } catch (grokErr) {
@@ -356,6 +357,7 @@ export default function MockTrigger() {
             triggerEvent({
                 text: textReply,
                 audioUrl, // Передаем сгенерированный blob: URL
+                emotionTarget,
             });
 
             // Очищаем инпут после успешного вопроса
@@ -492,6 +494,27 @@ export default function MockTrigger() {
                     className="flex-1 bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white text-[10px] font-bold py-2 rounded uppercase tracking-wider transition-colors active:scale-95"
                 >
                     Test TTS
+                </button>
+            </div>
+
+            <div className="flex gap-2 mt-1">
+                <button
+                    onClick={() => enqueueGift('low', 'AnonUser', 'Rose')}
+                    className="flex-1 bg-yellow-600 hover:bg-yellow-500 text-white text-[10px] font-bold py-2 rounded uppercase tracking-wider transition-colors active:scale-95"
+                >
+                    Gift Low
+                </button>
+                <button
+                    onClick={() => enqueueGift('mid', 'CoolGuy', 'TikTok')}
+                    className="flex-1 bg-orange-600 hover:bg-orange-500 text-white text-[10px] font-bold py-2 rounded uppercase tracking-wider transition-colors active:scale-95"
+                >
+                    Gift Mid
+                </button>
+                <button
+                    onClick={() => enqueueGift('high', 'RichFan', 'Universe')}
+                    className="flex-1 bg-red-600 hover:bg-red-500 text-white text-[10px] font-bold py-2 rounded uppercase tracking-wider transition-colors active:scale-95"
+                >
+                    Gift High
                 </button>
             </div>
 

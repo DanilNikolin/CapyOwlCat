@@ -39,10 +39,14 @@ export async function POST(req: NextRequest) {
         // Базовые ассеты
         if (role === 'loopAddon') filename = 'loop_addon.mp4';
         else if (role === 'idle') filename = 'idle.webm';
+        else if (role === 'panic') filename = 'panic.webm';
         // Динамические ассеты для групп (должны приходить в формате role="group_{id}_trans_in", etc)
-        else if (role.startsWith('group_') || role.startsWith('idlanim_')) {
+        else if (role.startsWith('group_') || role.startsWith('idlanim_') || role.startsWith('giftanim_') || role.startsWith('emanim_') || role.startsWith('gift_') || role.startsWith('emotion_')) {
             // Разрешаем только webm для слоев кота
             filename = `${role}.webm`;
+        }
+        else if (role === 'bgm') {
+            filename = file.name; // Keep original filename for bgm
         }
         else {
             return NextResponse.json({ error: 'Invalid role' }, { status: 400 });

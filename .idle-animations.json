@@ -3,12 +3,35 @@
     "id": "idlanim_1773159411214",
     "triggerTime": 5.16,
     "video": "idlanim_1773159411214.webm",
-    "chance": 30
+    "chance": 30,
+    "isMuted": false
   },
   {
     "id": "idlanim_1773167331740",
     "triggerTime": 9.14,
     "video": "idlanim_1773167331740.webm",
-    "chance": 30
+    "chance": 30,
+    "isMuted": false
+  },
+  {
+    "id": "idlanim_1773225790417",
+    "triggerTime": 12.13,
+    "video": "idlanim_1773225790417.webm",
+    "chance": 30,
+    "isMuted": false
+  },
+  {
+    "id": "idlanim_1773226941164",
+    "triggerTime": 16.21,
+    "video": "idlanim_1773226941164.webm",
+    "chance": 30,
+    "isMuted": false
+  },
+  {
+    "id": "idlanim_1773227633704",
+    "triggerTime": 19.27,
+    "video": "idlanim_1773227633704.webm",
+    "chance": 30,
+    "isMuted": false
   }
 ]

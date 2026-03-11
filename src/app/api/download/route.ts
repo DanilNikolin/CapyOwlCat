@@ -7,6 +7,7 @@ import fs from 'fs';
 export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const jobId = searchParams.get('jobId');
+    const name = searchParams.get('name');
 
     if (!jobId) {
         return new NextResponse('Job ID is missing in request', { status: 400 });
@@ -33,11 +34,17 @@ export async function GET(req: NextRequest) {
         }
     });
 
+    // URL-encoded name for browsers that support UTF-8 filename*
+    const fallbackName = `capyowl_alpha_${jobId.split('-')[0]}.webm`;
+    const finalName = name ? `${name}.webm` : fallbackName;
+    const encodedName = encodeURIComponent(finalName);
+
     return new NextResponse(stream as unknown as BodyInit, {
         headers: {
             'Content-Type': 'video/webm',
             // Force download with the target extension
-            'Content-Disposition': `attachment; filename="capyowl_alpha_${jobId.split('-')[0]}.webm"`,
+            // Use safe ASCII fallback name for 'filename', but the completely correct URL-encoded string for 'filename*=UTF-8'
+            'Content-Disposition': `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodedName}`,
         },
     });
 }

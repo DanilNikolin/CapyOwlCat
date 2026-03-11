@@ -29,8 +29,11 @@ export interface AnimationGroup {
   id: string;
   triggerTime: number;
   transIn: string;
+  transInMuted?: boolean;
   talk: string;
+  talkMuted?: boolean;
   transOut: string;
+  transOutMuted?: boolean;
 }
 
 export interface IdleAnimation {
@@ -38,27 +41,32 @@ export interface IdleAnimation {
   triggerTime: number; // время на основном idle.webm
   video: string;       // сам asset например sit_down.webm
   chance: number;      // 0-100%
+  isMuted?: boolean;   // Mute video audio
 }
 
 export interface GiftAnimation {
   id: string;
   triggerTime: number; // Секунда перехвата в айдле (для обычных)
   video: string;       // Сама webm-ка
-  targetTier: string;  // 'low', 'mid', 'high', 'universal'
+  targetTier: string;  // 'low', 'mid', 'high'
   minCombo: number;    // 1, 5, 10 и т.д.
   isPriority: boolean; // ОГОНЬ-ФЛАГ (мгновенный триггер)
+  isMuted?: boolean;   // Mute video audio
 }
 
 export interface QueuedGift {
   id: string;
   tier: string;
   count: number;
+  username?: string;
+  giftName?: string;
 }
 
 export interface EmotionAnimation {
   id: string;
   triggerTime: number; // Время перехвата в айдле
   video: string;       // Сама webm-ка
+  isMuted?: boolean;   // Mute video audio
 }
 
 export interface EmotionGroup {
@@ -107,8 +115,11 @@ interface PlayerStore {
   updateGiftAnimationField: <K extends keyof GiftAnimation>(id: string, field: K, value: GiftAnimation[K]) => void;
 
   giftQueue: QueuedGift[];
-  enqueueGift: (tier: string) => void;
+  enqueueGift: (tier: string, username?: string, giftName?: string) => void;
   consumeGiftQueueItem: (id: string, count: number) => void;
+  
+  activeGiftItem: QueuedGift | null;
+  setActiveGiftItem: (item: QueuedGift | null) => void;
 
   // Emotion Animations
   emotionGroups: EmotionGroup[];
@@ -125,6 +136,12 @@ interface PlayerStore {
   selectedVoice: string;
   fetchVoice: () => Promise<void>;
   updateVoice: (voice: string) => Promise<void>;
+
+  // BGM
+  bgmFile: string;
+  bgmVolume: number;
+  fetchBgmSettings: () => Promise<void>;
+  updateBgmSettings: (file: string, vol: number) => Promise<void>;
 
   // Цветокоррекция для каждого слота (например, { "talk": { hue: ... } })
   layerColors: Record<string, ColorSettings>;
@@ -167,6 +184,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   isPanicMode: false,
   currentEvent: null,
   incomingMessage: null,
+  activeGiftItem: null,
 
   groups: [],
   idleAnimations: [],
@@ -174,6 +192,8 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   giftQueue: [],
   emotionGroups: [],
   selectedVoice: 'en_US-lessac-medium.onnx',
+  bgmFile: '',
+  bgmVolume: 0.2,
   layerColors: {},
   monitorConfig: {
     width: 640, height: 480,
@@ -218,8 +238,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
         id: newId,
         triggerTime: 5.0,
         transIn: `${newId}_trans_in.webm`,
+        transInMuted: true,
         talk: `${newId}_talk.webm`,
+        talkMuted: true,
         transOut: `${newId}_trans_out.webm`,
+        transOutMuted: true,
       }
     ];
     get().updateGroups(newGroups);
@@ -274,6 +297,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
         triggerTime: 5.0,
         video: `${newId}.webm`,
         chance: 30, // 30% default chance
+        isMuted: true,
       }
     ];
     get().updateIdleAnimations(newAnims);
@@ -326,10 +350,11 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
       {
         id: newId,
         triggerTime: 2.0,
-        video: `rose.webm`,
+        video: `${newId}.webm`,
         targetTier: 'low',
         minCombo: 1,
         isPriority: false,
+        isMuted: true,
       }
     ];
     get().updateGiftAnimations(newAnims);
@@ -349,14 +374,14 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     get().updateGiftAnimations(newAnims);
   },
 
-  enqueueGift: (tier: string) => {
+  enqueueGift: (tier: string, username?: string, giftName?: string) => {
     const queue = get().giftQueue;
     const last = queue[queue.length - 1];
-    if (last && last.tier === tier) {
+    if (last && last.tier === tier && last.username === username && last.giftName === giftName) {
       const clonedLast = { ...last, count: last.count + 1 };
       set({ giftQueue: [...queue.slice(0, -1), clonedLast] });
     } else {
-      set({ giftQueue: [...queue, { id: `gq_${Date.now()}_${Math.random()}`, tier, count: 1 }] });
+      set({ giftQueue: [...queue, { id: `gq_${Date.now()}_${Math.random()}`, tier, count: 1, username, giftName }] });
     }
   },
 
@@ -431,14 +456,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     const current = get().emotionGroups;
     const newGroups = current.map(g => {
       if (g.id === groupId) {
+        const newAnimId = `emanim_${Date.now()}`;
         return {
           ...g,
           animations: [
             ...g.animations,
             {
-              id: `emanim_${Date.now()}`,
+              id: newAnimId,
               triggerTime: 2.0,
-              video: 'angry_anim.webm'
+              video: `${newAnimId}.webm`,
+              isMuted: true,
             }
           ]
         };
@@ -500,6 +527,31 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
       });
     } catch (e) {
       console.error("Failed to save voice setting", e);
+    }
+  },
+
+  fetchBgmSettings: async () => {
+    try {
+      const res = await fetch('/api/bgm-settings');
+      if (res.ok) {
+        const data = await res.json();
+        set({ bgmFile: data.bgmFile || '', bgmVolume: data.bgmVolume ?? 0.2 });
+      }
+    } catch (e) {
+      console.error("Failed to fetch bgm settings", e);
+    }
+  },
+
+  updateBgmSettings: async (file: string, vol: number) => {
+    set({ bgmFile: file, bgmVolume: vol });
+    try {
+      await fetch('/api/bgm-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bgmFile: file, bgmVolume: vol })
+      });
+    } catch (e) {
+      console.error("Failed to save bgm settings", e);
     }
   },
 
@@ -593,6 +645,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   },
 
   setState: (state) => set({ currentState: state }),
+  setActiveGiftItem: (item) => set({ activeGiftItem: item }),
   setThinking: (thinking) => set({ isThinking: thinking }),
   setPanicMode: (panic) => {
     set({ isPanicMode: panic });

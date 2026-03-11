@@ -18,8 +18,8 @@ export async function POST(req: Request) {
             if (res.ok) {
                 const groups: { triggerName: string, promptDesc: string }[] = await res.json();
                 if (groups && groups.length > 0) {
-                    const mappedEmotions = groups.map(g => `- *${g.triggerName}*: ${g.promptDesc}`).join('\n');
-                    emotionRules = `You have access to EMOTION ACTIONS. You can use AT MOST ONE emotion action per reply, by wrapping the EXACT keyword in asterisks anywhere in your response (e.g., *angry*).
+                    const mappedEmotions = groups.map(g => `- <emotion=${g.triggerName}>: ${g.promptDesc}`).join('\n');
+                    emotionRules = `You have access to EMOTION ACTIONS. You can use AT MOST ONE emotion action per reply, by including the EXACT tag anywhere in your response (e.g., <emotion=angry>).
                     
 Available actions:
 ${mappedEmotions}
@@ -79,7 +79,7 @@ You should attract people with charm, humor, and interesting responses.
 
 ${emotionRules}
 
-Do not use asterisk formatting EXCEPT for emotion keywords as instructed.
+Do not use asterisk formatting or markdown tags EXCEPT for <emotion=...> as instructed.
 
 Output only plain text that is easy to read out loud.`
                     },
@@ -112,16 +112,16 @@ Output only plain text that is easy to read out loud.`
         let finalReply = replyText;
         let detectedEmotion: string | undefined = undefined;
 
-        // Поиск любого текста между звездочками: *angry* -> capture 'angry'
-        const regex = /\*([^*]+)\*/g;
+        // Поиск любого текста внутри <emotion=...>: <emotion=angry> -> capture 'angry'
+        const regex = /<emotion=([^>]+)>/g;
         let match;
         while ((match = regex.exec(replyText)) !== null) {
-            detectedEmotion = match[1].toLowerCase().trim(); // берем первое попавшееся (или последнее, но оставим первое)
+            detectedEmotion = match[1].toLowerCase().trim();
             break;
         }
 
-        // Очищаем итоговый ответ от эмоции, чтобы TTS не читал "звездочка энгри звездочка"
-        finalReply = finalReply.replace(/\*([^*]+)\*/g, '').trim();
+        // Очищаем итоговый ответ от эмоции, чтобы TTS не читал тег
+        finalReply = finalReply.replace(/<emotion=([^>]+)>/g, '').trim();
 
         // Если это не спам, запоминаем диалог
         if (finalReply !== "Spam" && finalReply.length > 0) {
