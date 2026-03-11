@@ -1,11 +1,12 @@
 import { create } from 'zustand';
 
 // Стейты нашего плеера (Стейт-машина)
-export type PlayerState = 'idle' | 'idle_anim' | 'trans_in' | 'talk' | 'trans_out';
+export type PlayerState = 'idle' | 'idle_anim' | 'trans_in' | 'talk' | 'trans_out' | 'gift_anim' | 'panic' | 'emotion_anim';
 
 interface StreamEvent {
   text: string;           // Готовый текст ответа
   audioUrl?: string;      // URL аудио для озвучки
+  emotionTarget?: string; // Например "angry" (если найдено в тексте)
 }
 
 export interface IncomingMessage {
@@ -39,6 +40,34 @@ export interface IdleAnimation {
   chance: number;      // 0-100%
 }
 
+export interface GiftAnimation {
+  id: string;
+  triggerTime: number; // Секунда перехвата в айдле (для обычных)
+  video: string;       // Сама webm-ка
+  targetTier: string;  // 'low', 'mid', 'high', 'universal'
+  minCombo: number;    // 1, 5, 10 и т.д.
+  isPriority: boolean; // ОГОНЬ-ФЛАГ (мгновенный триггер)
+}
+
+export interface QueuedGift {
+  id: string;
+  tier: string;
+  count: number;
+}
+
+export interface EmotionAnimation {
+  id: string;
+  triggerTime: number; // Время перехвата в айдле
+  video: string;       // Сама webm-ка
+}
+
+export interface EmotionGroup {
+  id: string;
+  triggerName: string; // Идентификатор для триггера (напр. "angry")
+  promptDesc: string;  // Описание для LLM (напр. "Используй, когда юзер пишет тупость")
+  animations: EmotionAnimation[];
+}
+
 export interface MonitorConfig {
   width: number;
   height: number;
@@ -69,6 +98,29 @@ interface PlayerStore {
   removeIdleAnimation: (id: string) => void;
   updateIdleAnimationField: <K extends keyof IdleAnimation>(id: string, field: K, value: IdleAnimation[K]) => void;
 
+  // Gift Animations
+  giftAnimations: GiftAnimation[];
+  fetchGiftAnimations: () => Promise<void>;
+  updateGiftAnimations: (anims: GiftAnimation[]) => Promise<void>;
+  addGiftAnimation: () => void;
+  removeGiftAnimation: (id: string) => void;
+  updateGiftAnimationField: <K extends keyof GiftAnimation>(id: string, field: K, value: GiftAnimation[K]) => void;
+
+  giftQueue: QueuedGift[];
+  enqueueGift: (tier: string) => void;
+  consumeGiftQueueItem: (id: string, count: number) => void;
+
+  // Emotion Animations
+  emotionGroups: EmotionGroup[];
+  fetchEmotionGroups: () => Promise<void>;
+  updateEmotionGroups: (groups: EmotionGroup[]) => Promise<void>;
+  addEmotionGroup: () => void;
+  removeEmotionGroup: (id: string) => void;
+  updateEmotionGroupField: <K extends keyof EmotionGroup>(id: string, field: K, value: EmotionGroup[K]) => void;
+  addEmotionAnimation: (groupId: string) => void;
+  removeEmotionAnimation: (groupId: string, animId: string) => void;
+  updateEmotionAnimationField: <K extends keyof EmotionAnimation>(groupId: string, animId: string, field: K, value: EmotionAnimation[K]) => void;
+
   // Настройки голоса TTS
   selectedVoice: string;
   fetchVoice: () => Promise<void>;
@@ -86,6 +138,10 @@ interface PlayerStore {
 
   // Флаг, когда бэк думает над ответом (мигают индикаторы)
   isThinking: boolean;
+
+  // Флаг аварийного режима (Никаких генераций и LLM)
+  isPanicMode: boolean;
+  setPanicMode: (panic: boolean) => void;
 
   // Очередь или текущий ответ бэкенда для воспроизведения
   currentEvent: StreamEvent | null;
@@ -108,11 +164,15 @@ interface PlayerStore {
 export const usePlayerStore = create<PlayerStore>((set, get) => ({
   currentState: 'idle',
   isThinking: false,
+  isPanicMode: false,
   currentEvent: null,
   incomingMessage: null,
 
   groups: [],
   idleAnimations: [],
+  giftAnimations: [],
+  giftQueue: [],
+  emotionGroups: [],
   selectedVoice: 'en_US-lessac-medium.onnx',
   layerColors: {},
   monitorConfig: {
@@ -233,6 +293,191 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     get().updateIdleAnimations(newAnims);
   },
 
+  fetchGiftAnimations: async () => {
+    try {
+      const res = await fetch('/api/gifts-animations');
+      if (res.ok) {
+        const data = await res.json();
+        set({ giftAnimations: data || [] });
+      }
+    } catch (e) {
+      console.error("Failed to fetch gift animations", e);
+    }
+  },
+
+  updateGiftAnimations: async (anims: GiftAnimation[]) => {
+    set({ giftAnimations: anims });
+    try {
+      await fetch('/api/gifts-animations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(anims)
+      });
+    } catch (e) {
+      console.error("Failed to save gift animations", e);
+    }
+  },
+
+  addGiftAnimation: () => {
+    const current = get().giftAnimations;
+    const newId = `giftanim_${Date.now()}`;
+    const newAnims = [
+      ...current,
+      {
+        id: newId,
+        triggerTime: 2.0,
+        video: `rose.webm`,
+        targetTier: 'low',
+        minCombo: 1,
+        isPriority: false,
+      }
+    ];
+    get().updateGiftAnimations(newAnims);
+  },
+
+  removeGiftAnimation: (id: string) => {
+    const current = get().giftAnimations;
+    const newAnims = current.filter(a => a.id !== id);
+    get().updateGiftAnimations(newAnims);
+  },
+
+  updateGiftAnimationField: (id, field, value) => {
+    const current = get().giftAnimations;
+    const newAnims = current.map(a =>
+      a.id === id ? { ...a, [field]: value } : a
+    );
+    get().updateGiftAnimations(newAnims);
+  },
+
+  enqueueGift: (tier: string) => {
+    const queue = get().giftQueue;
+    const last = queue[queue.length - 1];
+    if (last && last.tier === tier) {
+      const clonedLast = { ...last, count: last.count + 1 };
+      set({ giftQueue: [...queue.slice(0, -1), clonedLast] });
+    } else {
+      set({ giftQueue: [...queue, { id: `gq_${Date.now()}_${Math.random()}`, tier, count: 1 }] });
+    }
+  },
+
+  consumeGiftQueueItem: (id: string, count: number) => {
+    const queue = get().giftQueue;
+    const itemIndex = queue.findIndex(q => q.id === id);
+    if (itemIndex > -1) {
+      const clonedItem = { ...queue[itemIndex], count: Math.max(0, queue[itemIndex].count - count) };
+      if (clonedItem.count <= 0) {
+        set({ giftQueue: [...queue.slice(0, itemIndex), ...queue.slice(itemIndex + 1)] });
+      } else {
+        set({ giftQueue: [...queue.slice(0, itemIndex), clonedItem, ...queue.slice(itemIndex + 1)] });
+      }
+    }
+  },
+
+  fetchEmotionGroups: async () => {
+    try {
+      const res = await fetch('/api/emotion-animations');
+      if (res.ok) {
+        const data = await res.json();
+        set({ emotionGroups: data || [] });
+      }
+    } catch (e) {
+      console.error("Failed to fetch emotion groups", e);
+    }
+  },
+
+  updateEmotionGroups: async (groups: EmotionGroup[]) => {
+    set({ emotionGroups: groups });
+    try {
+      await fetch('/api/emotion-animations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(groups)
+      });
+    } catch (e) {
+      console.error("Failed to save emotion groups", e);
+    }
+  },
+
+  addEmotionGroup: () => {
+    const current = get().emotionGroups;
+    const newId = `emotion_${Date.now()}`;
+    const newGroups = [
+      ...current,
+      {
+        id: newId,
+        triggerName: 'angry',
+        promptDesc: 'Опиши причину использования (для LLM)',
+        animations: []
+      }
+    ];
+    get().updateEmotionGroups(newGroups);
+  },
+
+  removeEmotionGroup: (id: string) => {
+    const current = get().emotionGroups;
+    const newGroups = current.filter(g => g.id !== id);
+    get().updateEmotionGroups(newGroups);
+  },
+
+  updateEmotionGroupField: (id, field, value) => {
+    const current = get().emotionGroups;
+    const newGroups = current.map(g =>
+      g.id === id ? { ...g, [field]: value } : g
+    );
+    get().updateEmotionGroups(newGroups);
+  },
+
+  addEmotionAnimation: (groupId: string) => {
+    const current = get().emotionGroups;
+    const newGroups = current.map(g => {
+      if (g.id === groupId) {
+        return {
+          ...g,
+          animations: [
+            ...g.animations,
+            {
+              id: `emanim_${Date.now()}`,
+              triggerTime: 2.0,
+              video: 'angry_anim.webm'
+            }
+          ]
+        };
+      }
+      return g;
+    });
+    get().updateEmotionGroups(newGroups);
+  },
+
+  removeEmotionAnimation: (groupId: string, animId: string) => {
+    const current = get().emotionGroups;
+    const newGroups = current.map(g => {
+      if (g.id === groupId) {
+        return {
+          ...g,
+          animations: g.animations.filter(a => a.id !== animId)
+        };
+      }
+      return g;
+    });
+    get().updateEmotionGroups(newGroups);
+  },
+
+  updateEmotionAnimationField: (groupId: string, animId: string, field, value) => {
+    const current = get().emotionGroups;
+    const newGroups = current.map(g => {
+      if (g.id === groupId) {
+        return {
+          ...g,
+          animations: g.animations.map(a =>
+            a.id === animId ? { ...a, [field]: value } : a
+          )
+        };
+      }
+      return g;
+    });
+    get().updateEmotionGroups(newGroups);
+  },
+
   fetchVoice: async () => {
     try {
       const res = await fetch('/api/voice-settings');
@@ -349,6 +594,15 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
 
   setState: (state) => set({ currentState: state }),
   setThinking: (thinking) => set({ isThinking: thinking }),
+  setPanicMode: (panic) => {
+    set({ isPanicMode: panic });
+    // Если мы включили панику - сразу обрубаем стейт в panic
+    if (panic) {
+      set({ currentState: 'panic', currentEvent: null, isThinking: false, giftQueue: [] });
+    } else {
+      set({ currentState: 'idle' });
+    }
+  },
   triggerEvent: (event) => set({ isThinking: false, currentEvent: event }),
   setIncomingMessage: (msg) => set({ incomingMessage: msg }),
   clearEvent: () => set({ currentEvent: null, incomingMessage: null })

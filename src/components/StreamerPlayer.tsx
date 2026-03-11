@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from 'react';
-import { usePlayerStore, AnimationGroup, IdleAnimation } from '@/store/usePlayerStore';
+import { usePlayerStore, AnimationGroup, IdleAnimation, GiftAnimation, EmotionAnimation } from '@/store/usePlayerStore';
 import { useTypewriter } from '@/hooks/useTypewriter';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import VirtualMonitor from './VirtualMonitor';
@@ -16,7 +16,8 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         isThinking, currentEvent, incomingMessage, clearEvent,
         layerColors, fetchLayerColors,
         idleAnimations,
-        groups, fetchMonitorConfig
+        groups, fetchMonitorConfig,
+        giftAnimations, giftQueue, consumeGiftQueueItem
     } = usePlayerStore();
 
     useEffect(() => {
@@ -27,6 +28,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
     // Refs для всех видео слоев
     const idleRef = useRef<HTMLVideoElement>(null);
     const idleAnimRef = useRef<HTMLVideoElement>(null);
+    const giftAnimRef = useRef<HTMLVideoElement>(null);
     const transInRef = useRef<HTMLVideoElement>(null);
     const talkRef = useRef<HTMLVideoElement>(null);
     const transOutRef = useRef<HTMLVideoElement>(null);
@@ -35,6 +37,9 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
     const [activeGroup, setActiveGroup] = useState<AnimationGroup | null>(null);
     const [activeIdleAnim, setActiveIdleAnim] = useState<IdleAnimation | null>(null);
     const [pendingIdleAnim, setPendingIdleAnim] = useState<IdleAnimation | null>(null);
+
+    const [activeGiftAnim, setActiveGiftAnim] = useState<GiftAnimation | null>(null);
+    const [activeEmotionAnim, setActiveEmotionAnim] = useState<EmotionAnimation | null>(null);
     const lastIdleTriggerTimeRef = useRef<number>(-1);
     const prevIdleTimeRef = useRef<number>(-1);
 
@@ -56,9 +61,12 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             let activeVideo: HTMLVideoElement | null = null;
             if (currentState === 'idle') activeVideo = idleRef.current;
             else if (currentState === 'idle_anim') activeVideo = idleAnimRef.current;
+            else if (currentState === 'gift_anim') activeVideo = giftAnimRef.current;
+            else if (currentState === 'emotion_anim') activeVideo = giftAnimRef.current; // Re-use giftAnimRef or create new? Let's re-use.
             else if (currentState === 'trans_in') activeVideo = transInRef.current;
             else if (currentState === 'talk') activeVideo = talkRef.current;
             else if (currentState === 'trans_out') activeVideo = transOutRef.current;
+            else if (currentState === 'panic') activeVideo = null; // Maybe add ref later if we need time tracking
 
             const aud = audioRef.current;
 
@@ -91,125 +99,244 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 prevIdleTimeRef.current = now;
             }
 
-            // Если мы в релаксе (idle), и пришел эвент!
-            if (currentState === 'idle' && currentEvent && idleVideo && groups.length > 0) {
+            // --- GIFTS LOGIC ---
+            if (currentState === 'idle' && giftQueue.length > 0 && giftAnimations.length > 0 && idleVideo) {
+                const now = idleVideo.currentTime;
+                const targetGift = giftQueue[0];
 
-                // Если мы еще не выбрали "цель", выбираем ближайшую!
-                if (!activeGroup) {
-                    const now = idleVideo.currentTime;
-                    const duration = idleVideo.duration || 10; // fallback
+                let bestAnim: GiftAnimation | null = null;
+                const matches = giftAnimations.filter((a: GiftAnimation) =>
+                    (a.targetTier === targetGift.tier || a.targetTier === 'universal') &&
+                    a.minCombo <= targetGift.count
+                );
 
-                    let bestGroup = groups[0];
-                    let minWait = Infinity;
-
-                    for (const g of groups) {
-                        let waitTime = g.triggerTime - now;
-                        // Если время уже прошло в этом цикле, придется ждать следующий луп
-                        if (waitTime < 0) {
-                            waitTime += duration;
-                        }
-
-                        if (waitTime < minWait) {
-                            minWait = waitTime;
-                            bestGroup = g;
-                        }
-                    }
-
-                    console.log(`[Player] Выбрана группа ${bestGroup.id} (ждать ${minWait.toFixed(2)}s)`);
-                    setActiveGroup(bestGroup);
-
-                    // Предзагружаем все ассеты выбранной группы как можно раньше
-                    if (transInVideo) {
-                        transInVideo.src = `/assets/${bestGroup.transIn}`;
-                        transInVideo.load();
-                    }
-
-                    if (talkRef.current) {
-                        talkRef.current.src = `/assets/${bestGroup.talk}`;
-                        talkRef.current.load();
-                    }
-                    if (transOutRef.current) {
-                        transOutRef.current.src = `/assets/${bestGroup.transOut}`;
-                        transOutRef.current.load();
-                    }
+                if (matches.length > 0) {
+                    matches.sort((a: GiftAnimation, b: GiftAnimation) => {
+                        if (b.minCombo !== a.minCombo) return b.minCombo - a.minCombo;
+                        if (a.targetTier !== b.targetTier) return a.targetTier === targetGift.tier ? -1 : 1;
+                        return 0;
+                    });
+                    bestAnim = matches[0];
                 }
-                // Если цель выбрана, ждем именно эту секунду!
-                else if (transInVideo) {
-                    const target = activeGroup.triggerTime;
 
-                    if (idleVideo.currentTime >= target && idleVideo.currentTime <= target + 0.15) {
-                        console.log(`[Player] Точка ${target}s пробита! Стартуем группу ${activeGroup.id}`);
+                if (bestAnim) {
+                    // Если есть очередь на разговор (currentEvent), подарки ждут, КРОМЕ priority
+                    if (!currentEvent || bestAnim.isPriority) {
+                        if (bestAnim.isPriority) {
+                            console.log(`[Player] Priority Gift Trigger! ${bestAnim.id}`);
+                            idleVideo.pause();
+                            setState('gift_anim');
+                            setActiveGiftAnim(bestAnim);
+                            consumeGiftQueueItem(targetGift.id, bestAnim.minCombo);
 
-                        idleVideo.pause();
-                        setState('trans_in');
+                            if (giftAnimRef.current) {
+                                giftAnimRef.current.src = `/assets/${bestAnim.video}`;
+                                giftAnimRef.current.currentTime = 0;
+                                giftAnimRef.current.play().catch(console.error);
+                            }
+                            return;
+                        } else {
+                            if (giftAnimRef.current && giftAnimRef.current.src.indexOf(bestAnim.video) === -1) {
+                                giftAnimRef.current.src = `/assets/${bestAnim.video}`;
+                                giftAnimRef.current.load();
+                            }
 
-                        // Запускаем предзагруженный заранее файл!
-                        transInVideo.currentTime = 0;
-                        transInVideo.play().catch(e => console.error("TransIn Play Error:", e));
+                            if (now >= bestAnim.triggerTime && now <= bestAnim.triggerTime + 0.15) {
+                                console.log(`[Player] Normal Gift Trigger @${bestAnim.triggerTime}s! ${bestAnim.id}`);
+                                idleVideo.pause();
+                                setState('gift_anim');
+                                setActiveGiftAnim(bestAnim);
+                                consumeGiftQueueItem(targetGift.id, bestAnim.minCombo);
 
-                        return;
+                                if (giftAnimRef.current) {
+                                    giftAnimRef.current.currentTime = 0;
+                                    giftAnimRef.current.play().catch(console.error);
+                                }
+                                return;
+                            }
+                        }
                     }
+                } else {
+                    console.warn(`[Player] No gift anim found for tier '${targetGift.tier}'. Discarding gift.`);
+                    consumeGiftQueueItem(targetGift.id, targetGift.count);
                 }
             }
 
-            // Если мы в релаксе (idle), и НЕТ эвента, проверяем рандомные Idle Animations
-            if (currentState === 'idle' && !currentEvent && !isThinking && idleVideo && idleAnimations.length > 0) {
+
+            // Если мы в релаксе (idle), и пришел эвент!
+            if (currentState === 'idle' && currentEvent && idleVideo && groups.length > 0) {
                 const now = idleVideo.currentTime;
 
-                // 1. Пытаемся заранее выбрать (preload) анимацию, если её ещё нет на горизонте
-                if (!pendingIdleAnim) {
-                    for (const anim of idleAnimations) {
-                        // Окно для выбора (за пару секунд ДО самого триггера)
-                        if (now < anim.triggerTime && anim.triggerTime - now < 3) {
-                            if (Math.abs(lastIdleTriggerTimeRef.current - anim.triggerTime) > 1) {
-                                lastIdleTriggerTimeRef.current = anim.triggerTime;
+                // Если в ивенте есть emotionTarget!
+                if (currentEvent.emotionTarget) {
+                    const store = usePlayerStore.getState();
+                    const targetGroup = store.emotionGroups.find(g => g.triggerName === currentEvent.emotionTarget);
 
-                                const roll = Math.random() * 100;
-                                if (roll <= anim.chance) {
-                                    console.log(`[Player] Pre-rolled / Pending Idle Anim: ${anim.id}`);
-                                    setPendingIdleAnim(anim);
+                    if (targetGroup && targetGroup.animations.length > 0) {
+                        // Find closest future animation
+                        let closestAnim = targetGroup.animations[0];
+                        let minDiff = Infinity;
 
-                                    if (idleAnimRef.current) {
-                                        idleAnimRef.current.src = `/assets/${anim.video}`;
-                                        idleAnimRef.current.load();
+                        for (const anim of targetGroup.animations) {
+                            let diff = anim.triggerTime - now;
+                            if (diff < 0) diff += idleVideo.duration; // wrap around loop
+
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                closestAnim = anim;
+                            }
+                        }
+
+                        // Preload
+                        if (giftAnimRef.current && giftAnimRef.current.src.indexOf(closestAnim.video) === -1) {
+                            giftAnimRef.current.src = `/assets/${closestAnim.video}`;
+                            giftAnimRef.current.load();
+                        }
+
+                        // It's time to trigger!
+                        if (now >= closestAnim.triggerTime && now <= closestAnim.triggerTime + 0.15) {
+                            console.log(`[Player] Emotion Trigger @${closestAnim.triggerTime}s! ${closestAnim.id}`);
+                            idleVideo.pause();
+                            setState('emotion_anim');
+                            setActiveEmotionAnim(closestAnim);
+
+                            setSubtitleText(currentEvent.text);
+                            setIsSubtitleVisible(true);
+
+                            if (giftAnimRef.current) {
+                                giftAnimRef.current.currentTime = 0;
+                                giftAnimRef.current.play().catch(console.error);
+                            }
+
+                            // Play audio overlay
+                            if (audioRef.current && currentEvent.audioUrl) {
+                                audioRef.current.src = currentEvent.audioUrl;
+                                audioRef.current.play().catch(console.error);
+                            }
+                            return;
+                        }
+                    } else {
+                        // Эмоция найдена, но нет загруженных анимаций. Фолбек на обычный разговор!
+                        console.warn(`[Player] Emotion group '${currentEvent.emotionTarget}' has no anims. Fallback to normal talk.`);
+                        currentEvent.emotionTarget = undefined; // Удаляем таргет и пускаем по обычному флоу
+                    }
+                }
+
+                // Обычный флоу (Без Эмоции)
+                if (!currentEvent.emotionTarget) {
+                    // Если мы еще не выбрали "цель", выбираем ближайшую!
+                    if (!activeGroup) {
+                        const now = idleVideo.currentTime;
+                        const duration = idleVideo.duration || 10; // fallback
+
+                        let bestGroup = groups[0];
+                        let minWait = Infinity;
+
+                        for (const g of groups) {
+                            let waitTime = g.triggerTime - now;
+                            // Если время уже прошло в этом цикле, придется ждать следующий луп
+                            if (waitTime < 0) {
+                                waitTime += duration;
+                            }
+
+                            if (waitTime < minWait) {
+                                minWait = waitTime;
+                                bestGroup = g;
+                            }
+                        }
+
+                        console.log(`[Player] Выбрана группа ${bestGroup.id} (ждать ${minWait.toFixed(2)}s)`);
+                        setActiveGroup(bestGroup);
+
+                        // Предзагружаем все ассеты выбранной группы как можно раньше
+                        if (transInVideo) {
+                            transInVideo.src = `/assets/${bestGroup.transIn}`;
+                            transInVideo.load();
+                        }
+
+                        if (talkRef.current) {
+                            talkRef.current.src = `/assets/${bestGroup.talk}`;
+                            talkRef.current.load();
+                        }
+                        if (transOutRef.current) {
+                            transOutRef.current.src = `/assets/${bestGroup.transOut}`;
+                            transOutRef.current.load();
+                        }
+                    }
+                    // Если цель выбрана, ждем именно эту секунду!
+                    else if (transInVideo) {
+                        const target = activeGroup.triggerTime;
+
+                        if (idleVideo.currentTime >= target && idleVideo.currentTime <= target + 0.15) {
+                            console.log(`[Player] Точка ${target}s пробита! Стартуем группу ${activeGroup.id}`);
+
+                            idleVideo.pause();
+                            setState('trans_in');
+
+                            // Запускаем предзагруженный заранее файл!
+                            transInVideo.currentTime = 0;
+                            transInVideo.play().catch(e => console.error("TransIn Play Error:", e));
+
+                            return;
+                        }
+                    }
+                }
+
+                // Если мы в релаксе (idle), и НЕТ эвента, проверяем рандомные Idle Animations
+                if (currentState === 'idle' && !currentEvent && !isThinking && idleVideo && idleAnimations.length > 0) {
+                    const now = idleVideo.currentTime;
+
+                    // 1. Пытаемся заранее выбрать (preload) анимацию, если её ещё нет на горизонте
+                    if (!pendingIdleAnim) {
+                        for (const anim of idleAnimations) {
+                            // Окно для выбора (за пару секунд ДО самого триггера)
+                            if (now < anim.triggerTime && anim.triggerTime - now < 3) {
+                                if (Math.abs(lastIdleTriggerTimeRef.current - anim.triggerTime) > 1) {
+                                    lastIdleTriggerTimeRef.current = anim.triggerTime;
+
+                                    const roll = Math.random() * 100;
+                                    if (roll <= anim.chance) {
+                                        console.log(`[Player] Pre-rolled / Pending Idle Anim: ${anim.id}`);
+                                        setPendingIdleAnim(anim);
+
+                                        if (idleAnimRef.current) {
+                                            idleAnimRef.current.src = `/assets/${anim.video}`;
+                                            idleAnimRef.current.load();
+                                        }
+                                        break;
                                     }
-                                    break;
                                 }
                             }
                         }
                     }
-                }
 
-                // 2. Если анимация была выбрана (preload), ждём её миллисекунду
-                if (pendingIdleAnim) {
-                    if (now >= pendingIdleAnim.triggerTime && now <= pendingIdleAnim.triggerTime + 0.15) {
-                        console.log(`[Player] Прокнул Idle Anim: ${pendingIdleAnim.id}`);
-                        setActiveIdleAnim(pendingIdleAnim);
-                        setPendingIdleAnim(null); // Очищаем ожидание
+                    // 2. Если анимация была выбрана (preload), ждём её миллисекунду
+                    if (pendingIdleAnim) {
+                        if (now >= pendingIdleAnim.triggerTime && now <= pendingIdleAnim.triggerTime + 0.15) {
+                            console.log(`[Player] Прокнул Idle Anim: ${pendingIdleAnim.id}`);
+                            setActiveIdleAnim(pendingIdleAnim);
+                            setPendingIdleAnim(null); // Очищаем ожидание
 
-                        idleVideo.pause();
-                        setState('idle_anim');
+                            idleVideo.pause();
+                            setState('idle_anim');
 
-                        // Запускаем предзагруженную анимацию
-                        if (idleAnimRef.current) {
-                            idleAnimRef.current.currentTime = 0;
-                            const playPromise = idleAnimRef.current.play();
-                            if (playPromise !== undefined) {
-                                playPromise.catch(e => console.error("Idle Anim Play Error:", e));
+                            // Запускаем предзагруженную анимацию
+                            if (idleAnimRef.current) {
+                                idleAnimRef.current.currentTime = 0;
+                                const playPromise = idleAnimRef.current.play();
+                                if (playPromise !== undefined) {
+                                    playPromise.catch(e => console.error("Idle Anim Play Error:", e));
+                                }
                             }
+                            return;
+                        } else if (now > pendingIdleAnim.triggerTime + 0.3) {
+                            // Срок годности ивента прошел (чтоб не залипало если промахнулись)
+                            setPendingIdleAnim(null);
                         }
-                        return;
-                    } else if (now > pendingIdleAnim.triggerTime + 0.3) {
-                        // Срок годности ивента прошел (чтоб не залипало если промахнулись)
-                        setPendingIdleAnim(null);
                     }
                 }
             }
-
-            if (currentState === 'idle') {
-                animationFrameId = requestAnimationFrame(checkTime);
-            }
-        };
+        }; // End of checkTime
 
         if (currentState === 'idle') {
             animationFrameId = requestAnimationFrame(checkTime);
@@ -218,7 +345,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         return () => {
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
         };
-    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, setState]);
+    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, giftAnimations, giftQueue, setState, consumeGiftQueueItem, activeEmotionAnim]);
 
 
     // Обработчики завершения видео/аудио
@@ -293,6 +420,20 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             idleRef.current.play().catch(console.error);
         }
         setActiveGroup(null); // Сбрасываем выбранную группу для след. раза
+        // Fallback for TTS if emotion ends early but audio still playing - handled via CSS or we can do manual cleanup.
+        // Actually if audio plays longer than emotion video, it will continue playing during `idle`. This is fine.
+        // If audio finishes first, we wait for emotion video to finish. 
+    };
+
+    const handleEmotionEnded = () => {
+        console.log('[Player] Emotion AnimEnded');
+        setState('idle');
+        setActiveEmotionAnim(null);
+        clearEvent(); // Clear the event since we consumed it
+        if (idleRef.current) {
+            idleRef.current.currentTime = activeEmotionAnim?.triggerTime || 0;
+            idleRef.current.play().catch(console.error);
+        }
     };
 
     const getLayerStyle = (slotId: string) => {
@@ -309,7 +450,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             {/* SVG фильтры цвета */}
             <svg className="hidden">
                 <defs>
-                    {['transIn', 'talk', 'transOut', ...idleAnimations.map(a => a.id)].map((slotId) => {
+                    {['transIn', 'talk', 'transOut', ...idleAnimations.map(a => a.id), ...giftAnimations.map(a => a.id)].map((slotId) => {
                         const defaultColors = { temperature: 0, tint: 0, hue: 0, saturate: 1, brightness: 1, contrast: 1 };
                         const s = { ...defaultColors, ...(layerColors[slotId] || {}) };
                         const v = s.temperature / 100;
@@ -380,6 +521,31 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     }}
                 />
 
+                {/* 1.75 GIFTS & EMOTION ANIMATION (Re-using this layer for emotions since they are mutually exclusive with gifts priority) */}
+                <video
+                    ref={giftAnimRef}
+                    playsInline
+                    muted={currentState === 'gift_anim'} // For emotions we play voice, video can remain muted if it has no audio. We overlay TTS manually.
+                    className={`absolute inset-0 w-full h-full object-contain transition-none ${(currentState === 'gift_anim' || currentState === 'emotion_anim') ? 'z-26 opacity-100' : 'z-0 opacity-0'}`}
+                    style={(activeGiftAnim || activeEmotionAnim) ? getLayerStyle((activeGiftAnim?.id || activeEmotionAnim?.id)!) : {}}
+                    onEnded={() => {
+                        if (currentState === 'emotion_anim') {
+                            handleEmotionEnded();
+                        } else {
+                            console.log('[Player] Gift anim закончился, возврат в Idle');
+                            setState('idle');
+                            const isPriority = activeGiftAnim?.isPriority;
+                            setActiveGiftAnim(null);
+                            if (idleRef.current) {
+                                if (!isPriority) {
+                                    idleRef.current.currentTime = activeGiftAnim?.triggerTime || 0;
+                                }
+                                idleRef.current.play().catch(console.error);
+                            }
+                        }
+                    }}
+                />
+
                 {/* 2. TRANSITION IN */}
                 <video
                     ref={transInRef}
@@ -407,13 +573,20 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     className={`absolute inset-0 w-full h-full object-contain ${currentState === 'trans_out' ? 'z-50 opacity-100' : 'z-0 opacity-0'}`}
                 />
 
+                {/* 5. PANIC MODE LOOP (Top most layer over everything else except UI) */}
+                <video
+                    src="/assets/panic.webm"
+                    loop autoPlay muted playsInline
+                    style={getLayerStyle('idle')} // Re-use idle color grading or transIn if preferred
+                    className={`absolute inset-0 w-full h-full object-contain transition-opacity duration-300 ${currentState === 'panic' ? 'z-60 opacity-100' : 'z-0 opacity-0 pointer-events-none'}`}
+                />
+
                 {/* 5. VIRTUAL MONITOR LAYER */}
                 <VirtualMonitor />
             </div>
 
             <audio ref={audioRef} onEnded={handleAudioEnded} className="hidden" />
 
-            {/* СЛОЙ 1: UI-Элементы */}
             <div className={`absolute bottom-10 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center w-full max-w-sm px-4 pointer-events-none transition-all duration-500 transform ${isSubtitleVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
 
                 {incomingMessage && (
@@ -468,6 +641,12 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                                 <span className="text-zinc-500">ACTIVE IDLE ANIM:</span>
                                 <span className={`font-bold ${activeIdleAnim ? 'text-blue-400' : 'text-zinc-600'}`}>
                                     {activeIdleAnim ? activeIdleAnim.id : 'NONE'}
+                                </span>
+                            </div>
+                            <div className="flex justify-between gap-6 pointer-events-none">
+                                <span className="text-zinc-500">GIFT QUEUE:</span>
+                                <span className={`font-bold ${giftQueue.length > 0 ? 'text-yellow-400' : 'text-zinc-600'}`}>
+                                    {giftQueue.length > 0 ? `${giftQueue.length} groups (Head: x${giftQueue[0].count} ${giftQueue[0].tier})` : 'EMPTY'}
                                 </span>
                             </div>
                             <div className="flex justify-between gap-6 pointer-events-none">

@@ -9,6 +9,7 @@ import MonitorTuner from './MonitorTuner';
 const STATIC_SLOTS = [
     { id: 'idle', label: 'Idle Loop', file: 'idle.webm', desc: 'Main resting loop (cat breathing)' },
     { id: 'loopAddon', label: 'Loop Addon', file: 'loop_addon.mp4', desc: 'Background extra loop (e.g. rain)' },
+    { id: 'panic', label: 'Panic Mode', file: 'panic.webm', desc: 'Emergency loop for when things break' },
 ];
 
 export default function AssetManager() {
@@ -16,11 +17,13 @@ export default function AssetManager() {
     const [scannedFiles, setScannedFiles] = useState<string[]>([]);
     const [loadingObj, setLoadingObj] = useState<Record<string, boolean>>({});
     const [showMonitorTuner, setShowMonitorTuner] = useState(false);
-    const [openSection, setOpenSection] = useState<'static' | 'groups' | 'idle' | ''>('groups');
+    const [openSection, setOpenSection] = useState<'static' | 'groups' | 'idle' | 'gifts' | 'emotions' | ''>('groups');
 
     const {
         groups, fetchGroups, addGroup, removeGroup, updateGroupField,
         idleAnimations, fetchIdleAnimations, addIdleAnimation, removeIdleAnimation, updateIdleAnimationField,
+        giftAnimations, fetchGiftAnimations, addGiftAnimation, removeGiftAnimation, updateGiftAnimationField,
+        emotionGroups, fetchEmotionGroups, addEmotionGroup, removeEmotionGroup, updateEmotionGroupField, addEmotionAnimation, removeEmotionAnimation, updateEmotionAnimationField,
         layerColors, updateLayerColor
     } = usePlayerStore();
 
@@ -42,7 +45,9 @@ export default function AssetManager() {
         checkAssets();
         fetchGroups();
         fetchIdleAnimations();
-    }, [fetchGroups, fetchIdleAnimations]);
+        fetchGiftAnimations();
+        fetchEmotionGroups();
+    }, [fetchGroups, fetchIdleAnimations, fetchGiftAnimations, fetchEmotionGroups]);
 
     const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, role: string) => {
         if (!e.target.files || !e.target.files[0]) return;
@@ -324,6 +329,213 @@ export default function AssetManager() {
 
                         {idleAnimations.length === 0 && (
                             <div className="text-center text-xs text-zinc-600 py-4 italic">No idle animations defined.</div>
+                        )}
+                    </div>
+                )}
+
+                <div className="h-[1px] bg-zinc-800 my-1" />
+
+                {/* --- GIFTS BREAKDOWNS --- */}
+                <div
+                    className="flex justify-between items-center cursor-pointer bg-zinc-800/50 p-2 rounded-lg hover:bg-zinc-800 transition-colors"
+                    onClick={() => setOpenSection(openSection === 'gifts' ? '' : 'gifts')}
+                >
+                    <h4 className="text-xs font-bold text-zinc-400 uppercase flex items-center gap-2">
+                        {openSection === 'gifts' ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        Gifts Breakdowns ({giftAnimations.length})
+                    </h4>
+                </div>
+
+                {openSection === 'gifts' && (
+                    <div className="flex flex-col gap-3 mt-2 pl-2 border-l border-zinc-800">
+                        <button
+                            onClick={addGiftAnimation}
+                            className="bg-yellow-600 hover:bg-yellow-500 text-white text-[10px] py-2 px-2 rounded flex items-center justify-center gap-1 font-bold mb-1 w-full"
+                        >
+                            <Plus className="w-4 h-4" /> ADD NEW GIFT ANIM
+                        </button>
+
+                        {giftAnimations.map((anim, index) => (
+                            <div key={anim.id} className="bg-black border border-yellow-900/40 rounded-lg p-3 flex flex-col gap-2 relative">
+                                <div className="flex justify-between items-center mb-2">
+                                    <span className="text-xs font-bold text-yellow-400">Gift Anim #{index + 1}</span>
+                                    <button onClick={() => removeGiftAnimation(anim.id)} className="text-zinc-600 hover:text-red-500 p-1">
+                                        <Trash2 className="w-3 h-3" />
+                                    </button>
+                                </div>
+
+                                <div className="flex items-center justify-between bg-zinc-900 p-2 rounded text-xs text-white border border-zinc-800">
+                                    <span>Target Tier:</span>
+                                    <select
+                                        value={anim.targetTier}
+                                        onChange={(e) => updateGiftAnimationField(anim.id, 'targetTier', e.target.value)}
+                                        className="bg-black text-white w-24 text-right outline-none rounded px-1 border border-zinc-700 focus:border-yellow-500 transition-colors"
+                                    >
+                                        <option value="universal">Universal</option>
+                                        <option value="low">Low</option>
+                                        <option value="mid">Mid</option>
+                                        <option value="high">High</option>
+                                    </select>
+                                </div>
+
+                                <div className="flex items-center justify-between bg-zinc-900 p-2 rounded text-xs text-white border border-zinc-800">
+                                    <span>Min Combo:</span>
+                                    <input
+                                        type="number"
+                                        step="1"
+                                        min="1"
+                                        value={anim.minCombo}
+                                        onChange={(e) => updateGiftAnimationField(anim.id, 'minCombo', parseInt(e.target.value) || 1)}
+                                        className="bg-black text-white w-16 text-right outline-none rounded px-1 border border-zinc-700 focus:border-yellow-500 transition-colors"
+                                    />
+                                </div>
+
+                                {/* Флаг Priority */}
+                                <label className="flex items-center gap-2 cursor-pointer text-xs text-white bg-zinc-900 p-2 rounded border border-zinc-800">
+                                    <input
+                                        type="checkbox"
+                                        checked={anim.isPriority}
+                                        onChange={(e) => updateGiftAnimationField(anim.id, 'isPriority', e.target.checked)}
+                                        className="accent-yellow-500 w-4 h-4"
+                                    />
+                                    <span className="flex-1">Instant Priority <span className="text-zinc-500 text-[10px]">(skips time)</span></span>
+                                </label>
+
+                                {/* Trigger Time Input */}
+                                <div className={`flex items-center justify-between bg-zinc-900 p-2 rounded text-xs text-white border border-zinc-800 transition-opacity ${anim.isPriority ? 'opacity-50 pointer-events-none' : 'opacity-100'}`}>
+                                    <span>Trigger @ Sec <span className="text-zinc-500 text-[10px]">(in Idle)</span>:</span>
+                                    <input
+                                        type="number"
+                                        step="0.01"
+                                        value={anim.triggerTime}
+                                        onChange={(e) => updateGiftAnimationField(anim.id, 'triggerTime', parseFloat(e.target.value) || 0)}
+                                        disabled={anim.isPriority}
+                                        className="bg-black text-white w-16 text-right outline-none rounded px-1 border border-zinc-700 focus:border-yellow-500 transition-colors disabled:opacity-50"
+                                    />
+                                </div>
+
+                                <div className="flex border-t border-zinc-800 pt-2 mt-2 items-center justify-between">
+                                    <div className="flex-1">{renderUploadSlot(anim.id, anim.video, 'Animation Video')}</div>
+                                    <button
+                                        onClick={() => setTuningSlot({ id: anim.id, label: `Tuning Gift Anim #${index + 1} (${anim.id})`, file: anim.video, isGlobal: false })}
+                                        className="ml-2 w-10 h-10 bg-zinc-800 hover:bg-zinc-700 text-yellow-400 hover:text-yellow-300 rounded flex items-center justify-center transition-colors border border-yellow-900/40 shadow shrink-0"
+                                        title="Tune Animation Colors"
+                                    >
+                                        <SlidersHorizontal className="w-5 h-5" />
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+
+                        {giftAnimations.length === 0 && (
+                            <div className="text-center text-xs text-zinc-600 py-4 italic">No gift animations defined.</div>
+                        )}
+                    </div>
+                )}
+
+
+                <div className="h-[1px] bg-zinc-800 my-1" />
+
+                {/* --- EMOTION GROUPS --- */}
+                <div
+                    className="flex justify-between items-center cursor-pointer bg-zinc-800/50 p-2 rounded-lg hover:bg-zinc-800 transition-colors"
+                    onClick={() => setOpenSection(openSection === 'emotions' ? '' : 'emotions')}
+                >
+                    <h4 className="text-xs font-bold text-zinc-400 uppercase flex items-center gap-2">
+                        {openSection === 'emotions' ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        Emotion Groups ({emotionGroups.length})
+                    </h4>
+                </div>
+
+                {openSection === 'emotions' && (
+                    <div className="flex flex-col gap-3 mt-2 pl-2 border-l border-zinc-800">
+                        <button
+                            onClick={addEmotionGroup}
+                            className="bg-pink-600 hover:bg-pink-500 text-white text-[10px] py-2 px-2 rounded flex items-center justify-center gap-1 font-bold mb-1 w-full"
+                        >
+                            <Plus className="w-4 h-4" /> ADD NEW EMOTION GROUP
+                        </button>
+
+                        {emotionGroups.map((group, index) => (
+                            <div key={group.id} className="bg-black border border-pink-900/40 rounded-lg p-3 flex flex-col gap-2 relative">
+                                <div className="flex justify-between items-center mb-2">
+                                    <span className="text-xs font-bold text-pink-400">Emotion #{index + 1}</span>
+                                    <button onClick={() => removeEmotionGroup(group.id)} className="text-zinc-600 hover:text-red-500 p-1">
+                                        <Trash2 className="w-3 h-3" />
+                                    </button>
+                                </div>
+
+                                <div className="flex items-center justify-between bg-zinc-900 p-2 rounded text-xs text-white border border-zinc-800">
+                                    <span>Trigger Name:</span>
+                                    <input
+                                        type="text"
+                                        value={group.triggerName}
+                                        onChange={(e) => updateEmotionGroupField(group.id, 'triggerName', e.target.value)}
+                                        className="bg-black text-white w-24 text-right outline-none rounded px-1 border border-zinc-700 focus:border-pink-500 transition-colors"
+                                        placeholder="angry"
+                                    />
+                                </div>
+
+                                <div className="flex flex-col gap-1 bg-zinc-900 p-2 rounded text-xs text-white border border-zinc-800">
+                                    <span className="text-zinc-400 mb-1">Prompt Instructions (for Grok):</span>
+                                    <textarea
+                                        value={group.promptDesc}
+                                        onChange={(e) => updateEmotionGroupField(group.id, 'promptDesc', e.target.value)}
+                                        className="bg-black text-white w-full h-16 outline-none rounded p-1 border border-zinc-700 focus:border-pink-500 transition-colors resize-none"
+                                        placeholder="Describe when to use this emotion..."
+                                    />
+                                </div>
+
+                                <div className="mt-2">
+                                    <div className="flex justify-between items-center mb-2 px-1">
+                                        <span className="text-[10px] text-zinc-500 font-bold">ANIMATIONS ({group.animations.length})</span>
+                                        <button
+                                            onClick={() => addEmotionAnimation(group.id)}
+                                            className="text-pink-400 hover:text-pink-300 text-[10px] font-bold px-2 py-1 bg-zinc-900 rounded border border-zinc-800"
+                                        >
+                                            + ADD ANIM
+                                        </button>
+                                    </div>
+
+                                    <div className="flex flex-col gap-2">
+                                        {group.animations.map((anim, aIdx) => (
+                                            <div key={anim.id} className="flex flex-col gap-2 bg-zinc-900/50 p-2 rounded border border-zinc-800">
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-[10px] text-zinc-500">Var #{aIdx + 1}</span>
+                                                    <button onClick={() => removeEmotionAnimation(group.id, anim.id)} className="text-zinc-600 hover:text-red-500">
+                                                        <X className="w-3 h-3" />
+                                                    </button>
+                                                </div>
+
+                                                <div className="flex items-center justify-between bg-black p-1 rounded border border-zinc-800 text-xs">
+                                                    <span className="text-zinc-400 px-1">Trigger @ Sec:</span>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        value={anim.triggerTime}
+                                                        onChange={(e) => updateEmotionAnimationField(group.id, anim.id, 'triggerTime', parseFloat(e.target.value) || 0)}
+                                                        className="bg-transparent text-white w-14 text-right outline-none pr-1"
+                                                    />
+                                                </div>
+
+                                                <div className="flex items-center justify-between">
+                                                    <div className="flex-1 scale-90 origin-left">{renderUploadSlot(anim.id, anim.video, 'WebM')}</div>
+                                                    <button
+                                                        onClick={() => setTuningSlot({ id: anim.id, label: `Tune Emotion ${group.triggerName} (${anim.id})`, file: anim.video, isGlobal: false })}
+                                                        className="w-8 h-8 bg-zinc-800 hover:bg-zinc-700 text-pink-400 hover:text-pink-300 rounded flex items-center justify-center border border-pink-900/40"
+                                                    >
+                                                        <SlidersHorizontal className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+
+                        {emotionGroups.length === 0 && (
+                            <div className="text-center text-xs text-zinc-600 py-4 italic">No emotion groups defined.</div>
                         )}
                     </div>
                 )}

@@ -9,6 +9,28 @@ export async function POST(req: Request) {
     try {
         const { prompt, username } = await req.json();
 
+        // 1. Fetch emotion groups from our local API/file to inject into the prompt
+        let emotionRules = "";
+        try {
+            const proto = req.headers.get('x-forwarded-proto') || 'http';
+            const host = req.headers.get('host');
+            const res = await fetch(`${proto}://${host}/api/emotion-animations`);
+            if (res.ok) {
+                const groups: { triggerName: string, promptDesc: string }[] = await res.json();
+                if (groups && groups.length > 0) {
+                    const mappedEmotions = groups.map(g => `- *${g.triggerName}*: ${g.promptDesc}`).join('\n');
+                    emotionRules = `You have access to EMOTION ACTIONS. You can use AT MOST ONE emotion action per reply, by wrapping the EXACT keyword in asterisks anywhere in your response (e.g., *angry*).
+                    
+Available actions:
+${mappedEmotions}
+
+Use them rarely and only when it perfectly fits the situation.`;
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to fetch emotion groups for prompt injection", e);
+        }
+
         if (!prompt) {
             return NextResponse.json({ error: 'Prompt is required' }, { status: 400 });
         }
@@ -55,7 +77,9 @@ If someone sends a gift, you must react with genuine joy and thank them. Do not 
 You should not impress people with logic.
 You should attract people with charm, humor, and interesting responses.
 
-Do not use asterisks, emojis, brackets, or any formatting.
+${emotionRules}
+
+Do not use asterisk formatting EXCEPT for emotion keywords as instructed.
 
 Output only plain text that is easy to read out loud.`
                     },
@@ -84,10 +108,25 @@ Output only plain text that is easy to read out loud.`
             return NextResponse.json({ error: 'Empty response from model' }, { status: 500 });
         }
 
+        // 2. Parse out emotion trigger from model response
+        let finalReply = replyText;
+        let detectedEmotion: string | undefined = undefined;
+
+        // Поиск любого текста между звездочками: *angry* -> capture 'angry'
+        const regex = /\*([^*]+)\*/g;
+        let match;
+        while ((match = regex.exec(replyText)) !== null) {
+            detectedEmotion = match[1].toLowerCase().trim(); // берем первое попавшееся (или последнее, но оставим первое)
+            break;
+        }
+
+        // Очищаем итоговый ответ от эмоции, чтобы TTS не читал "звездочка энгри звездочка"
+        finalReply = finalReply.replace(/\*([^*]+)\*/g, '').trim();
+
         // Если это не спам, запоминаем диалог
-        if (replyText.trim() !== "Spam") {
+        if (finalReply !== "Spam" && finalReply.length > 0) {
             chatHistory.push({ role: "user", content: `[${username || 'Streamer'}]: ${prompt}` });
-            chatHistory.push({ role: "assistant", content: replyText });
+            chatHistory.push({ role: "assistant", content: finalReply });
 
             // Обрезаем историю, чтобы она не росла бесконечно
             if (chatHistory.length > MAX_HISTORY_PAIRS * 2) {
@@ -95,7 +134,7 @@ Output only plain text that is easy to read out loud.`
             }
         }
 
-        return NextResponse.json({ reply: replyText });
+        return NextResponse.json({ reply: finalReply, emotionTarget: detectedEmotion });
 
     } catch (error: unknown) {
         console.error('Grok Route Error:', error);

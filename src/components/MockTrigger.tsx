@@ -40,6 +40,7 @@ type RawTikTokGiftEvent = {
         giftName?: string;
         giftType?: number;
         repeatEnd?: boolean;
+        diamondCount?: number;
     };
 };
 
@@ -50,7 +51,7 @@ type IncomingMessage =
     | { username: string; text: string; type: 'gift'; giftName: string };
 
 export default function MockTrigger() {
-    const { setThinking, triggerEvent, selectedVoice, fetchVoice, updateVoice, setIncomingMessage } = usePlayerStore();
+    const { setThinking, triggerEvent, selectedVoice, fetchVoice, updateVoice, setIncomingMessage, enqueueGift, isPanicMode, setPanicMode } = usePlayerStore();
     const [inputValue, setInputValue] = useState('Testing. Just say hi and hello world and nothing else.');
 
     // Manage Loading State + Ref for setInterval access
@@ -108,7 +109,12 @@ export default function MockTrigger() {
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
         const pollTikTok = async () => {
-            if (!isActive || !isTiktokConnected) return;
+            if (!isActive || !isTiktokConnected || usePlayerStore.getState().isPanicMode) {
+                if (isActive && isTiktokConnected) {
+                    timeoutId = setTimeout(pollTikTok, 2000);
+                }
+                return;
+            }
 
             let nextPollDelay = 1000;
 
@@ -153,28 +159,18 @@ export default function MockTrigger() {
                                 e.type === 'gift' &&
                                 e.data?.uniqueId &&
                                 e.data?.giftName &&
-                                e.data?.giftType === 1 &&
-                                !e.data?.repeatEnd
+                                !e.data?.repeatEnd // Игнорим промежуточные спам-ивенты, если не repeatEnd. Или ловим все, чтобы набивать комбо?
+                                // У тиктока repeatEnd=true приходит в конце комбо, но нам лучше закидывать по одному, чтобы наша giftQueue сама стакала комбо!
                             ) {
-                                const alreadyQueued = vipQueueRef.current.some(
-                                    x =>
-                                        x.data.uniqueId === e.data!.uniqueId &&
-                                        x.data.giftName === e.data!.giftName &&
-                                        now - x.timestamp < 3000
-                                );
+                                // Если это обычный эвент подарка
+                                const diamonds = e.data.diamondCount || 1; // Фоллбэк, если пока нет diamondCount
+                                let tier = 'low';
+                                if (diamonds >= 100 && diamonds < 1000) tier = 'mid';
+                                else if (diamonds >= 1000) tier = 'high';
 
-                                if (!alreadyQueued) {
-                                    vipQueueRef.current.push({
-                                        type: 'gift',
-                                        timestamp: now,
-                                        data: {
-                                            uniqueId: e.data!.uniqueId,
-                                            giftName: e.data!.giftName,
-                                            giftType: e.data!.giftType,
-                                            repeatEnd: e.data!.repeatEnd,
-                                        },
-                                    });
-                                }
+                                enqueueGift(tier);
+
+                                // VIP-очередь больше не юзаем для подарков, они идут напрямую в плеер.
                             } else if (e.type === 'chat' && e.data?.comment && e.data?.uniqueId) {
                                 const rawText = e.data.comment.trim();
                                 const user = e.data.uniqueId;
@@ -237,19 +233,10 @@ export default function MockTrigger() {
                     const isBusy = isLoadingRef.current || usePlayerStore.getState().isThinking || usePlayerStore.getState().currentState !== 'idle';
 
                     if (!isBusy) {
-                        let selectedEvent: ChatEvent | GiftEvent | null = null;
-
-                        const hasVip = vipQueueRef.current.length > 0;
+                        let selectedEvent: ChatEvent | null = null;
                         const hasChat = currentWindowRef.current.length > 0;
 
-                        // Weighted Priority: 2 VIP -> 1 Chat -> 2 VIP
-                        if (hasVip && (consecutiveVipsRef.current < 2 || !hasChat)) {
-                            const vipEvent = vipQueueRef.current.shift();
-                            if (vipEvent) {
-                                selectedEvent = vipEvent;
-                                consecutiveVipsRef.current++;
-                            }
-                        } else if (hasChat) {
+                        if (hasChat) {
                             const sortedWindow = [...currentWindowRef.current].sort((a, b) => b.score - a.score);
 
                             // Берем топ-3 (или меньше) с лучшим скором и рандомим между ними
@@ -258,17 +245,11 @@ export default function MockTrigger() {
 
                             // СЖИГАЕМ ОКНО (Chat clears!)
                             currentWindowRef.current = [];
-                            consecutiveVipsRef.current = 0; // Сбрасываем счетчик VIP
                         }
 
-                        if (selectedEvent) {
-                            if (selectedEvent.type === 'chat') {
-                                const prompt = `${selectedEvent.data.uniqueId} asks: ${selectedEvent.data.comment}`;
-                                handleAskGrok(prompt, { username: selectedEvent.data.uniqueId, text: selectedEvent.data.comment, type: 'chat' });
-                            } else if (selectedEvent.type === 'gift') {
-                                const prompt = `${selectedEvent.data.uniqueId} sent a gift! Say thank you for the ${selectedEvent.data.giftName}!`;
-                                handleAskGrok(prompt, { username: selectedEvent.data.uniqueId, text: "Sent a gift!", type: 'gift', giftName: selectedEvent.data.giftName });
-                            }
+                        if (selectedEvent && selectedEvent.type === 'chat') {
+                            const prompt = `${selectedEvent.data.uniqueId} asks: ${selectedEvent.data.comment}`;
+                            handleAskGrok(prompt, { username: selectedEvent.data.uniqueId, text: selectedEvent.data.comment, type: 'chat' });
                         }
                     }
                 }
@@ -305,6 +286,7 @@ export default function MockTrigger() {
     }, [fetchVoice]);
 
     const handleAskGrok = async (customPrompt?: string, customMessage?: IncomingMessage) => {
+        if (usePlayerStore.getState().isPanicMode) return;
         // У нас может быть click event (React.MouseEvent), поэтому чекаем тип:
         const isString = typeof customPrompt === 'string';
         const promptToUse = isString ? customPrompt : inputValue;
@@ -430,10 +412,21 @@ export default function MockTrigger() {
 
     return (
         <div className="absolute top-4 right-4 z-50 bg-zinc-900 border border-zinc-700 p-4 rounded-xl flex flex-col gap-3 w-80 shadow-2xl">
-            <h3 className="text-white text-sm font-bold uppercase tracking-wider mb-1 flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${isLoading ? 'bg-yellow-500 animate-pulse' : 'bg-blue-500'}`} />
-                Grok AI Trigger
-            </h3>
+            <div className="flex justify-between items-center mb-1">
+                <h3 className="text-white text-sm font-bold uppercase tracking-wider flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${isLoading ? 'bg-yellow-500 animate-pulse' : 'bg-blue-500'}`} />
+                    Grok AI Trigger
+                </h3>
+
+                <button
+                    onClick={() => setPanicMode(!isPanicMode)}
+                    className={`px-2 py-1 flex items-center gap-1 rounded text-[10px] font-bold uppercase tracking-widest transition-colors border ${isPanicMode
+                        ? 'bg-red-500 text-white border-red-500 animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]'
+                        : 'bg-zinc-800 text-zinc-400 border-zinc-700 hover:text-white'}`}
+                >
+                    {isPanicMode ? 'PANIC: ON' : 'PANIC: OFF'}
+                </button>
+            </div>
 
             <select
                 value={selectedVoice}

@@ -1,0 +1,10 @@
+[
+  {
+    "id": "giftanim_1773211675862",
+    "triggerTime": 2,
+    "video": "rose.webm",
+    "targetTier": "low",
+    "minCombo": 1,
+    "isPriority": false
+  }
+]
