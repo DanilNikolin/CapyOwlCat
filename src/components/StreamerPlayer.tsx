@@ -20,6 +20,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         groups, fetchGroups,
         fetchMonitorConfig, 
         giftAnimations, fetchGiftAnimations,
+        emotionGroups,
         fetchEmotionGroups,
         giftQueue, consumeGiftQueueItem,
         setActiveGiftItem, bgmFile, bgmVolume, fetchBgmSettings
@@ -171,7 +172,6 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
             if (idleVideo) {
                 currentVidTime = idleVideo.currentTime;
-                // Детект лупа: если время пошло назад (видео началось сначала) - сбрасываем триггеры
                 if (currentVidTime < prevTime) {
                     lastIdleTriggerTimeRef.current = -1;
                     isLooped = true;
@@ -186,21 +186,22 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
             const now = currentVidTime;
 
-            // --- GIFTS LOGIC ---
+            // --- PRIORITY 1: GIFTS ---
             if (currentState === 'idle' && giftQueue.length > 0 && idleVideo) {
-                const targetGift = giftQueue[0];
+                // Если прилетел подарок — мгновенно сносим всё менее важное "заряженное"
+                if (pendingIdleAnim) setPendingIdleAnim(null);
+                if (activeGroup) setActiveGroup(null);
 
+                const targetGift = giftQueue[0];
                 let bestAnim: GiftAnimation | null = null;
+                
                 if (giftAnimations.length > 0) {
                     const matches = giftAnimations.filter((a: GiftAnimation) =>
                         a.targetTier === targetGift.tier && a.minCombo <= targetGift.count
                     );
 
                     if (matches.length > 0) {
-                        matches.sort((a: GiftAnimation, b: GiftAnimation) => {
-                            return b.minCombo - a.minCombo;
-                        });
-                        
+                        matches.sort((a: GiftAnimation, b: GiftAnimation) => b.minCombo - a.minCombo);
                         const highestCombo = matches[0].minCombo;
                         const bestOptions = matches.filter((a: GiftAnimation) => a.minCombo === highestCombo);
                         let minDiff = Infinity;
@@ -210,12 +211,8 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                                 bestAnim = anim;
                                 break;
                             }
-
                             let diff = anim.triggerTime - now;
-                            // Смещение на -0.3, чтобы когда мы внутри окна триггера,
-                            // анимация не перескакивала на "лучшую будущую".
                             if (diff < -0.3) diff += idleVideo.duration || 10; 
-
                             if (diff < minDiff) {
                                 minDiff = diff;
                                 bestAnim = anim;
@@ -225,10 +222,29 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 }
 
                 if (bestAnim) {
-                    // Если есть очередь на разговор (currentEvent), подарки ждут, КРОМЕ priority
-                    if (!currentEvent || bestAnim.isPriority) {
-                        if (bestAnim.isPriority) {
-                            console.log(`[Player] Priority Gift Trigger! ${bestAnim.id}`);
+                    if (bestAnim.isPriority) {
+                        console.log(`[Player] Priority Gift Trigger! ${bestAnim.id}`);
+                        idleVideo.pause();
+                        setState('gift_anim');
+                        setActiveGiftAnim(bestAnim);
+                        setActiveGiftItem(targetGift);
+                        consumeGiftQueueItem(targetGift.id, bestAnim.minCombo);
+
+                        if (giftAnimRef.current) {
+                            giftAnimRef.current.src = `/assets/${bestAnim.video}`;
+                            giftAnimRef.current.currentTime = 0;
+                            giftAnimRef.current.play().catch(console.error);
+                        }
+                        return;
+                    } else {
+                        if (giftAnimRef.current && !giftAnimRef.current.src.endsWith(bestAnim.video)) {
+                            console.log(`[Player] Preloading gift video: ${bestAnim.video}`);
+                            giftAnimRef.current.src = `/assets/${bestAnim.video}`;
+                            giftAnimRef.current.load();
+                        }
+
+                        if (hasCrossed(bestAnim.triggerTime)) {
+                            console.log(`[Player] Normal Gift Trigger @${bestAnim.triggerTime}s! ${bestAnim.id}`);
                             idleVideo.pause();
                             setState('gift_anim');
                             setActiveGiftAnim(bestAnim);
@@ -236,108 +252,70 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                             consumeGiftQueueItem(targetGift.id, bestAnim.minCombo);
 
                             if (giftAnimRef.current) {
-                                giftAnimRef.current.src = `/assets/${bestAnim.video}`;
                                 giftAnimRef.current.currentTime = 0;
                                 giftAnimRef.current.play().catch(console.error);
                             }
                             return;
-                        } else {
-                            if (giftAnimRef.current && !giftAnimRef.current.src.endsWith(bestAnim.video)) {
-                                console.log(`[Player] Preloading gift video: ${bestAnim.video}`);
-                                giftAnimRef.current.src = `/assets/${bestAnim.video}`;
-                                giftAnimRef.current.load();
-                            }
-
-                            if (hasCrossed(bestAnim.triggerTime)) {
-                                console.log(`[Player] Normal Gift Trigger @${bestAnim.triggerTime}s! ${bestAnim.id}`);
-                                idleVideo.pause();
-                                setState('gift_anim');
-                                setActiveGiftAnim(bestAnim);
-                                setActiveGiftItem(targetGift);
-                                consumeGiftQueueItem(targetGift.id, bestAnim.minCombo);
-
-                                if (giftAnimRef.current) {
-                                    giftAnimRef.current.currentTime = 0;
-                                    giftAnimRef.current.play().catch(console.error);
-                                }
-                                return;
-                            }
                         }
                     }
                 } else {
-                    // Фолбэк: выводим 100% только на Виртуальный Монитор (видео нет/не подходит)
-                    console.log(`[Player] No exact video found for tier '${targetGift.tier}'. Using virtual monitor fallback.`);
-                    
+                    // Фолбэк: выводим на Виртуальный Монитор
+                    console.log(`[Player] No exact video found for tier '${targetGift.tier}'. Fallback monitor.`);
                     idleVideo.pause();
                     setState('gift_anim');
-                    setActiveGiftAnim(null); // Убеждаемся что нет активной webm
+                    setActiveGiftAnim(null);
                     setActiveGiftItem(targetGift);
                     consumeGiftQueueItem(targetGift.id, targetGift.count);
                     
-                    // Показываем плашку 4 секунды и возвращаемся
                     setSafeTimeout(() => {
                         const state = usePlayerStore.getState();
-                        // Проверяем, что не перебили стейт разговором или паникой
                         if (state.currentState === 'gift_anim') {
-                            console.log(`[Player] Fallback gift ended, returning to idle.`);
                             state.setState('idle');
                             state.setActiveGiftItem(null);
                             setActiveGiftAnim(null);
-                            if (idleRef.current) {
-                                idleRef.current.play().catch(console.error);
-                            }
+                            if (idleRef.current) idleRef.current.play().catch(console.error);
                         }
                     }, 4000);
-                    
                     return;
                 }
+
+                // В очереди подарок, но время еще не пришло -> Блокируем всё остальное
+                animationFrameId = requestAnimationFrame(checkTime);
+                return;
             }
 
+            // --- PRIORITY 2: CONVERSATION / EMOTION ---
+            if (currentState === 'idle' && giftQueue.length === 0 && currentEvent && idleVideo && groups.length > 0) {
+                // Если есть эвент — сбрасываем ожидающие айдлы
+                if (pendingIdleAnim) setPendingIdleAnim(null);
 
-            // Если мы в релаксе (idle), и пришел эвент!
-            if (currentState === 'idle' && currentEvent && idleVideo && groups.length > 0) {
-                // Если в ивенте есть emotionTarget!
                 if (currentEvent.emotionTarget) {
-                    const store = usePlayerStore.getState();
-                    const targetGroup = store.emotionGroups.find(g => g.triggerName === currentEvent.emotionTarget);
+                    const targetGroup = emotionGroups.find(g => g.triggerName === currentEvent.emotionTarget);
 
                     if (targetGroup && targetGroup.animations.length > 0) {
-                        // Find closest future animation
                         let closestAnim = targetGroup.animations[0];
                         let minDiff = Infinity;
-
                         for (const anim of targetGroup.animations) {
                             let diff = anim.triggerTime - now;
-                            if (diff < 0) diff += idleVideo.duration; // wrap around loop
-
-                            if (diff < minDiff) {
-                                minDiff = diff;
-                                closestAnim = anim;
-                            }
+                            if (diff < 0) diff += idleVideo.duration;
+                            if (diff < minDiff) { minDiff = diff; closestAnim = anim; }
                         }
 
-                        // Preload
                         if (giftAnimRef.current && giftAnimRef.current.src.indexOf(closestAnim.video) === -1) {
                             giftAnimRef.current.src = `/assets/${closestAnim.video}`;
                             giftAnimRef.current.load();
                         }
 
-                        // It's time to trigger!
                         if (hasCrossed(closestAnim.triggerTime)) {
-                            console.log(`[Player] Emotion Trigger @${closestAnim.triggerTime}s! ${closestAnim.id}`);
                             idleVideo.pause();
                             setState('emotion_anim');
                             setActiveEmotionAnim(closestAnim);
-
                             setSubtitleText({ text: currentEvent.text, id: ++subtitleCounterRef.current });
                             setIsSubtitleVisible(true);
-
                             if (giftAnimRef.current) {
                                 giftAnimRef.current.currentTime = 0;
                                 giftAnimRef.current.play().catch(console.error);
                             }
-
-                            // Play audio overlay
                             if (audioRef.current && currentEvent.audioUrl) {
                                 audioRef.current.src = currentEvent.audioUrl;
                                 audioRef.current.play().catch(console.error);
@@ -345,123 +323,76 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                             return;
                         }
                     } else {
-                        // Эмоция найдена, но нет загруженных анимаций. Фолбек на обычный разговор!
-                        console.warn(`[Player] Emotion group '${currentEvent.emotionTarget}' has no anims. Fallback to normal talk.`);
-                        clearEmotionTarget(); // Удаляем таргет и пускаем по обычному флоу
+                        clearEmotionTarget();
                     }
                 }
 
-                // Обычный флоу (Без Эмоции)
                 if (!currentEvent.emotionTarget) {
-                    // Если мы еще не выбрали "цель", выбираем ближайшую!
                     if (!activeGroup) {
-                        const duration = idleVideo.duration || 10; // fallback
-
+                        const duration = idleVideo.duration || 10;
                         let bestGroup = groups[0];
                         let minWait = Infinity;
-
                         for (const g of groups) {
                             let waitTime = g.triggerTime - now;
-                            // Если время уже прошло в этом цикле, придется ждать следующий луп
-                            if (waitTime < 0) {
-                                waitTime += duration;
-                            }
-
-                            if (waitTime < minWait) {
-                                minWait = waitTime;
-                                bestGroup = g;
-                            }
+                            if (waitTime < 0) waitTime += duration;
+                            if (waitTime < minWait) { minWait = waitTime; bestGroup = g; }
                         }
-
-                        console.log(`[Player] Выбрана группа ${bestGroup.id} (ждать ${minWait.toFixed(2)}s)`);
                         setActiveGroup(bestGroup);
-
-                        // Предзагружаем все ассеты выбранной группы как можно раньше
-                        if (transInVideo) {
-                            transInVideo.src = `/assets/${bestGroup.transIn}`;
-                            transInVideo.load();
-                        }
-
-                        if (talkRef.current) {
-                            talkRef.current.src = `/assets/${bestGroup.talk}`;
-                            talkRef.current.load();
-                        }
-                        if (transOutRef.current) {
-                            transOutRef.current.src = `/assets/${bestGroup.transOut}`;
-                            transOutRef.current.load();
-                        }
-                    }
-                    // Если цель выбрана, ждем именно эту секунду!
-                    else if (transInVideo) {
-                        const target = activeGroup.triggerTime;
-
-                        if (hasCrossed(target)) {
-                            console.log(`[Player] Точка ${target}s пробита! Стартуем группу ${activeGroup.id}`);
-
+                        if (transInRef.current) { transInRef.current.src = `/assets/${bestGroup.transIn}`; transInRef.current.load(); }
+                        if (talkRef.current) { talkRef.current.src = `/assets/${bestGroup.talk}`; talkRef.current.load(); }
+                        if (transOutRef.current) { transOutRef.current.src = `/assets/${bestGroup.transOut}`; transOutRef.current.load(); }
+                    } else {
+                        if (hasCrossed(activeGroup.triggerTime)) {
                             idleVideo.pause();
                             setState('trans_in');
-
-                            // Запускаем предзагруженный заранее файл!
-                            transInVideo.currentTime = 0;
-                            transInVideo.play().catch(e => console.error("TransIn Play Error:", e));
-
+                            if (transInRef.current) {
+                                transInRef.current.currentTime = 0;
+                                transInRef.current.play().catch(console.error);
+                            }
                             return;
                         }
                     }
                 }
+
+                // Ждем эвента... Блокируем айдлы
+                animationFrameId = requestAnimationFrame(checkTime);
+                return;
             }
 
-            // Если мы в релаксе (idle), и НЕТ эвента, проверяем рандомные Idle Animations
-            if (currentState === 'idle' && !currentEvent && !isThinking && idleVideo && idleAnimations.length > 0) {
-                    // 1. Пытаемся заранее выбрать (preload) анимацию, если её ещё нет на горизонте
-                    if (!pendingIdleAnim) {
-                        for (const anim of idleAnimations) {
-                            // Окно для выбора (за пару секунд ДО самого триггера)
-                            if (now < anim.triggerTime && anim.triggerTime - now < 3) {
-                                // Only roll once per loop per animation trigger time
-                                if (Math.abs(lastIdleTriggerTimeRef.current - anim.triggerTime) > 0.5) {
-                                    lastIdleTriggerTimeRef.current = anim.triggerTime;
-
-                                    const roll = Math.random() * 100;
-                                    if (roll <= anim.chance) {
-                                        console.log(`[Player] Pre-rolled / Pending Idle Anim: ${anim.id} (Roll: ${roll.toFixed(1)} <= ${anim.chance})`);
-                                        setPendingIdleAnim(anim);
-
-                                        if (idleAnimRef.current) {
-                                            idleAnimRef.current.src = `/assets/${anim.video}`;
-                                            idleAnimRef.current.load();
-                                        }
-                                        break;
-                                    } else {
-                                        console.log(`[Player] Idle Anim Skipped: ${anim.id} (Roll: ${roll.toFixed(1)} > ${anim.chance})`);
+            // --- PRIORITY 3: IDLE BREAKDOWNS ---
+            if (currentState === 'idle' && giftQueue.length === 0 && !currentEvent && !isThinking && idleVideo && idleAnimations.length > 0) {
+                if (!pendingIdleAnim) {
+                    for (const anim of idleAnimations) {
+                        if (now < anim.triggerTime && anim.triggerTime - now < 3) {
+                            if (Math.abs(lastIdleTriggerTimeRef.current - anim.triggerTime) > 0.5) {
+                                lastIdleTriggerTimeRef.current = anim.triggerTime;
+                                const roll = Math.random() * 100;
+                                if (roll <= anim.chance) {
+                                    setPendingIdleAnim(anim);
+                                    if (idleAnimRef.current) {
+                                        idleAnimRef.current.src = `/assets/${anim.video}`;
+                                        idleAnimRef.current.load();
                                     }
+                                    break;
                                 }
                             }
                         }
                     }
+                }
 
-                    // 2. Если анимация была выбрана (preload), ждём её миллисекунду
-                    if (pendingIdleAnim) {
-                        if (hasCrossed(pendingIdleAnim.triggerTime)) {
-                            console.log(`[Player] Прокнул Idle Anim: ${pendingIdleAnim.id}`);
-                            setActiveIdleAnim(pendingIdleAnim);
-                            setPendingIdleAnim(null); // Очищаем ожидание
-
-                            idleVideo.pause();
-                            setState('idle_anim');
-
-                            // Запускаем предзагруженную анимацию
-                            if (idleAnimRef.current) {
-                                idleAnimRef.current.currentTime = 0;
-                                const playPromise = idleAnimRef.current.play();
-                                if (playPromise !== undefined) {
-                                    playPromise.catch(e => console.error("Idle Anim Play Error:", e));
-                                }
-                            }
-                            return;
-                        } else if (now > pendingIdleAnim.triggerTime + 0.3) {
-                            // Срок годности ивента прошел (чтоб не залипало если промахнулись)
-                            setPendingIdleAnim(null);
+                if (pendingIdleAnim) {
+                    if (hasCrossed(pendingIdleAnim.triggerTime)) {
+                        setActiveIdleAnim(pendingIdleAnim);
+                        setPendingIdleAnim(null);
+                        idleVideo.pause();
+                        setState('idle_anim');
+                        if (idleAnimRef.current) {
+                            idleAnimRef.current.currentTime = 0;
+                            idleAnimRef.current.play().catch(console.error);
+                        }
+                        return;
+                    } else if (now > pendingIdleAnim.triggerTime + 0.3) {
+                        setPendingIdleAnim(null);
                     }
                 }
             }
@@ -476,7 +407,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         return () => {
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
         };
-    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, giftAnimations, giftQueue, setState, consumeGiftQueueItem, activeEmotionAnim, setActiveGiftItem, clearEmotionTarget]);
+    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, giftAnimations, emotionGroups, giftQueue, setState, consumeGiftQueueItem, activeEmotionAnim, setActiveGiftItem, clearEmotionTarget]);
 
 
     // Обработчики завершения видео/аудио
@@ -558,6 +489,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
     const handleEmotionEnded = () => {
         console.log('[Player] Emotion AnimEnded');
+        const triggerTime = activeEmotionAnim?.triggerTime || 0;
         setState('idle');
         setActiveEmotionAnim(null);
         if (currentEvent?.audioUrl) {
@@ -565,7 +497,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         }
         clearEvent(); // Clear the event since we consumed it
         if (idleRef.current) {
-            idleRef.current.currentTime = activeEmotionAnim?.triggerTime || 0;
+            idleRef.current.currentTime = triggerTime;
             idleRef.current.play().catch(console.error);
         }
     };
@@ -781,7 +713,8 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
             <audio ref={audioRef} onEnded={handleAudioEnded} className="hidden" />
 
-            <div className={`absolute bottom-10 left-1/2 -translate-x-1/2 z-[70] flex flex-col items-center w-full max-w-sm px-4 pointer-events-none transition-all duration-500 transform ${isSubtitleVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+            {/* UI LAYER: Subtitles & Messages */}
+            <div className={`absolute bottom-10 left-1/2 -translate-x-1/2 z-[70] flex flex-col items-center w-full max-w-sm px-4 pointer-events-none transition-all duration-500 transform ${ (isSubtitleVisible || !!incomingMessage) ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
 
                 {incomingMessage && (
                     <div className="bg-[#00ffcc] text-black font-bold text-xs uppercase px-3 py-1 rounded-t-lg shadow-lg self-start ml-2 mb-[-1px] z-30">
