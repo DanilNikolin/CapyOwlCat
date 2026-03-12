@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-export function useTypewriter(text: string, speed: number = 30) {
+export function useTypewriter(text: string, speed: number = 30, versionKey: number = 0) {
     const [displayedText, setDisplayedText] = useState('');
 
     useEffect(() => {
@@ -22,7 +22,7 @@ export function useTypewriter(text: string, speed: number = 30) {
         }, speed);
 
         return () => clearInterval(interval);
-    }, [text, speed]);
+    }, [text, speed, versionKey]);
 
     return displayedText;
 }

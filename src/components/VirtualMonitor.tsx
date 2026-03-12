@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { usePlayerStore } from '@/store/usePlayerStore';
+import { useShallow } from 'zustand/react/shallow';
 import { getTransformMatrix } from '@/utils/math';
 import { Cpu, Radio, Volume2, Waves, Gift } from 'lucide-react'; // Массивные иконки
 
@@ -13,7 +14,13 @@ const IDLE_MESSAGES = [
 ];
 
 export default function VirtualMonitor() {
-    const { monitorConfig, isThinking, currentState, incomingMessage, activeGiftItem } = usePlayerStore();
+    const { monitorConfig, isThinking, currentState, incomingMessage, activeGiftItem } = usePlayerStore(useShallow(state => ({
+        monitorConfig: state.monitorConfig,
+        isThinking: state.isThinking,
+        currentState: state.currentState,
+        incomingMessage: state.incomingMessage,
+        activeGiftItem: state.activeGiftItem
+    })));
 
     // We can add some internal rotating logic or states here if needed
     const [idleTextIndex, setIdleTextIndex] = useState(0);
@@ -113,6 +120,16 @@ export default function VirtualMonitor() {
                                     />
                                 ))}
                             </div>
+                        </div>
+                    ) : currentState === 'emotion_anim' ? (
+                        /* STATE: EMOTIONAL OVERRIDE */
+                        <div className="flex flex-col items-center gap-4 text-[#ff0055]">
+                            <div className="relative">
+                                <Radio className="w-16 h-16 md:w-20 md:h-20 text-[#ff0055] animate-ping drop-shadow-[0_0_15px_rgba(255,0,85,0.8)]" strokeWidth={1.5} />
+                            </div>
+                            <span className="font-bold tracking-widest text-[#ff0055] text-sm md:text-base drop-shadow-[0_0_10px_rgba(255,0,85,1)] border border-[#ff0055]/50 px-3 py-1 bg-black/50 backdrop-blur-md uppercase mb-2">
+                                EMOTIONAL OVERRIDE
+                            </span>
                         </div>
                     ) : currentState === 'gift_anim' ? (
                         /* STATE: GIFT ANIMATION */

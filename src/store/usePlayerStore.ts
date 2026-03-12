@@ -173,6 +173,7 @@ interface PlayerStore {
   // Экшены для бэкенда (дергаются, когда прилетает эвент)
   setThinking: (thinking: boolean) => void;
   triggerEvent: (event: StreamEvent) => void;
+  clearEmotionTarget: () => void;
 
   // Сброс эвента после завершения болтовни
   clearEvent: () => void;
@@ -656,7 +657,16 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
       set({ currentState: 'idle' });
     }
   },
-  triggerEvent: (event) => set({ isThinking: false, currentEvent: event }),
+  triggerEvent: (event) => {
+    if (get().isPanicMode) return;
+    set({ isThinking: false, currentEvent: event });
+  },
+  clearEmotionTarget: () => {
+    const { currentEvent } = get();
+    if (currentEvent) {
+      set({ currentEvent: { ...currentEvent, emotionTarget: undefined } });
+    }
+  },
   setIncomingMessage: (msg) => set({ incomingMessage: msg }),
   clearEvent: () => set({ currentEvent: null, incomingMessage: null })
 }));

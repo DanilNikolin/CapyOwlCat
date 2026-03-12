@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { usePlayerStore, AnimationGroup, IdleAnimation, GiftAnimation, EmotionAnimation } from '@/store/usePlayerStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useTypewriter } from '@/hooks/useTypewriter';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import VirtualMonitor from './VirtualMonitor';
@@ -12,17 +13,43 @@ interface StreamerPlayerProps {
 
 export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerProps) {
     const {
-        currentState, setState,
-        isThinking, currentEvent, incomingMessage, clearEvent,
+        currentState, setState, isPanicMode,
+        isThinking, currentEvent, incomingMessage, clearEvent, clearEmotionTarget,
         layerColors, fetchLayerColors,
         idleAnimations, fetchIdleAnimations,
         groups, fetchGroups,
-        fetchMonitorConfig,
+        fetchMonitorConfig, 
         giftAnimations, fetchGiftAnimations,
         fetchEmotionGroups,
         giftQueue, consumeGiftQueueItem,
-        setActiveGiftItem
-    } = usePlayerStore();
+        setActiveGiftItem, bgmFile, bgmVolume, fetchBgmSettings
+    } = usePlayerStore(useShallow(state => ({
+        currentState: state.currentState,
+        setState: state.setState,
+        isPanicMode: state.isPanicMode,
+        isThinking: state.isThinking,
+        currentEvent: state.currentEvent,
+        incomingMessage: state.incomingMessage,
+        clearEvent: state.clearEvent,
+        clearEmotionTarget: state.clearEmotionTarget,
+        layerColors: state.layerColors,
+        fetchLayerColors: state.fetchLayerColors,
+        idleAnimations: state.idleAnimations,
+        fetchIdleAnimations: state.fetchIdleAnimations,
+        groups: state.groups,
+        fetchGroups: state.fetchGroups,
+        fetchMonitorConfig: state.fetchMonitorConfig,
+        emotionGroups: state.emotionGroups,
+        giftAnimations: state.giftAnimations,
+        fetchGiftAnimations: state.fetchGiftAnimations,
+        fetchEmotionGroups: state.fetchEmotionGroups,
+        giftQueue: state.giftQueue,
+        consumeGiftQueueItem: state.consumeGiftQueueItem,
+        setActiveGiftItem: state.setActiveGiftItem,
+        bgmFile: state.bgmFile,
+        bgmVolume: state.bgmVolume,
+        fetchBgmSettings: state.fetchBgmSettings
+    })));
 
     useEffect(() => {
         fetchLayerColors();
@@ -52,13 +79,53 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
     const prevIdleTimeRef = useRef<number>(-1);
 
     // Для UI-тайпрайтера и длительности субтитров
-    const [subtitleText, setSubtitleText] = useState('');
+    const [subtitleText, setSubtitleText] = useState({ text: '', id: 0 });
+    const subtitleCounterRef = useRef(0);
     const [isSubtitleVisible, setIsSubtitleVisible] = useState(false);
-    const typedText = useTypewriter(subtitleText, 30);
+    const typedText = useTypewriter(subtitleText.text, 30, subtitleText.id);
 
     // Таймеры отладки (только для EditorMode)
     const [debugTime, setDebugTime] = useState({ vid: '0.00 / 0.00', aud: 'OFF' });
     const [isPipelineOpen, setIsPipelineOpen] = useState(true);
+
+    const timeoutRefs = useRef<Set<NodeJS.Timeout>>(new Set());
+    const setSafeTimeout = (callback: () => void, ms: number) => {
+        const id = setTimeout(() => {
+            timeoutRefs.current.delete(id);
+            callback();
+        }, ms);
+        timeoutRefs.current.add(id);
+        return id;
+    };
+
+    // Panic Mode Cleanup
+    useEffect(() => {
+        if (isPanicMode || currentState === 'panic') {
+            console.log('[Player] PANIC MODE: Aborting all active playbacks and resetting states.');
+            [idleRef, idleAnimRef, giftAnimRef, transInRef, talkRef, transOutRef].forEach(ref => {
+                if (ref.current) {
+                    ref.current.pause();
+                    ref.current.currentTime = 0;
+                }
+            });
+            if (audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.currentTime = 0;
+            }
+            timeoutRefs.current.forEach(clearTimeout);
+            timeoutRefs.current.clear();
+
+            queueMicrotask(() => {
+                setActiveGroup(null);
+                setActiveIdleAnim(null);
+                setPendingIdleAnim(null);
+                setActiveGiftAnim(null);
+                setActiveEmotionAnim(null);
+                setIsSubtitleVisible(false);
+                setSubtitleText({ text: '', id: 0 });
+            });
+        }
+    }, [isPanicMode, currentState]);
 
     useEffect(() => {
         if (!isEditorMode) return;
@@ -98,18 +165,29 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             const idleVideo = idleRef.current;
             const transInVideo = transInRef.current;
 
+            let prevTime = prevIdleTimeRef.current;
+            let currentVidTime = 0;
+            let isLooped = false;
+
             if (idleVideo) {
-                const now = idleVideo.currentTime;
+                currentVidTime = idleVideo.currentTime;
                 // Детект лупа: если время пошло назад (видео началось сначала) - сбрасываем триггеры
-                if (now < prevIdleTimeRef.current) {
+                if (currentVidTime < prevTime) {
                     lastIdleTriggerTimeRef.current = -1;
+                    isLooped = true;
                 }
-                prevIdleTimeRef.current = now;
+                prevIdleTimeRef.current = currentVidTime;
             }
+
+            const hasCrossed = (target: number) => {
+                if (isLooped) return prevTime <= target || currentVidTime >= target;
+                return prevTime <= target && currentVidTime >= target;
+            };
+
+            const now = currentVidTime;
 
             // --- GIFTS LOGIC ---
             if (currentState === 'idle' && giftQueue.length > 0 && idleVideo) {
-                const now = idleVideo.currentTime;
                 const targetGift = giftQueue[0];
 
                 let bestAnim: GiftAnimation | null = null;
@@ -170,7 +248,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                                 giftAnimRef.current.load();
                             }
 
-                            if (now >= bestAnim.triggerTime && now <= bestAnim.triggerTime + 0.3) {
+                            if (hasCrossed(bestAnim.triggerTime)) {
                                 console.log(`[Player] Normal Gift Trigger @${bestAnim.triggerTime}s! ${bestAnim.id}`);
                                 idleVideo.pause();
                                 setState('gift_anim');
@@ -197,7 +275,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     consumeGiftQueueItem(targetGift.id, targetGift.count);
                     
                     // Показываем плашку 4 секунды и возвращаемся
-                    setTimeout(() => {
+                    setSafeTimeout(() => {
                         const state = usePlayerStore.getState();
                         // Проверяем, что не перебили стейт разговором или паникой
                         if (state.currentState === 'gift_anim') {
@@ -218,8 +296,6 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
             // Если мы в релаксе (idle), и пришел эвент!
             if (currentState === 'idle' && currentEvent && idleVideo && groups.length > 0) {
-                const now = idleVideo.currentTime;
-
                 // Если в ивенте есть emotionTarget!
                 if (currentEvent.emotionTarget) {
                     const store = usePlayerStore.getState();
@@ -247,13 +323,13 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                         }
 
                         // It's time to trigger!
-                        if (now >= closestAnim.triggerTime && now <= closestAnim.triggerTime + 0.15) {
+                        if (hasCrossed(closestAnim.triggerTime)) {
                             console.log(`[Player] Emotion Trigger @${closestAnim.triggerTime}s! ${closestAnim.id}`);
                             idleVideo.pause();
                             setState('emotion_anim');
                             setActiveEmotionAnim(closestAnim);
 
-                            setSubtitleText(currentEvent.text);
+                            setSubtitleText({ text: currentEvent.text, id: ++subtitleCounterRef.current });
                             setIsSubtitleVisible(true);
 
                             if (giftAnimRef.current) {
@@ -271,7 +347,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     } else {
                         // Эмоция найдена, но нет загруженных анимаций. Фолбек на обычный разговор!
                         console.warn(`[Player] Emotion group '${currentEvent.emotionTarget}' has no anims. Fallback to normal talk.`);
-                        currentEvent.emotionTarget = undefined; // Удаляем таргет и пускаем по обычному флоу
+                        clearEmotionTarget(); // Удаляем таргет и пускаем по обычному флоу
                     }
                 }
 
@@ -279,7 +355,6 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                 if (!currentEvent.emotionTarget) {
                     // Если мы еще не выбрали "цель", выбираем ближайшую!
                     if (!activeGroup) {
-                        const now = idleVideo.currentTime;
                         const duration = idleVideo.duration || 10; // fallback
 
                         let bestGroup = groups[0];
@@ -320,7 +395,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     else if (transInVideo) {
                         const target = activeGroup.triggerTime;
 
-                        if (idleVideo.currentTime >= target && idleVideo.currentTime <= target + 0.15) {
+                        if (hasCrossed(target)) {
                             console.log(`[Player] Точка ${target}s пробита! Стартуем группу ${activeGroup.id}`);
 
                             idleVideo.pause();
@@ -338,8 +413,6 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
             // Если мы в релаксе (idle), и НЕТ эвента, проверяем рандомные Idle Animations
             if (currentState === 'idle' && !currentEvent && !isThinking && idleVideo && idleAnimations.length > 0) {
-                const now = idleVideo.currentTime;
-
                     // 1. Пытаемся заранее выбрать (preload) анимацию, если её ещё нет на горизонте
                     if (!pendingIdleAnim) {
                         for (const anim of idleAnimations) {
@@ -369,7 +442,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
                     // 2. Если анимация была выбрана (preload), ждём её миллисекунду
                     if (pendingIdleAnim) {
-                        if (now >= pendingIdleAnim.triggerTime && now <= pendingIdleAnim.triggerTime + 0.15) {
+                        if (hasCrossed(pendingIdleAnim.triggerTime)) {
                             console.log(`[Player] Прокнул Idle Anim: ${pendingIdleAnim.id}`);
                             setActiveIdleAnim(pendingIdleAnim);
                             setPendingIdleAnim(null); // Очищаем ожидание
@@ -403,7 +476,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         return () => {
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
         };
-    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, giftAnimations, giftQueue, setState, consumeGiftQueueItem, activeEmotionAnim, setActiveGiftItem]);
+    }, [currentState, currentEvent, isThinking, groups, activeGroup, pendingIdleAnim, idleAnimations, giftAnimations, giftQueue, setState, consumeGiftQueueItem, activeEmotionAnim, setActiveGiftItem, clearEmotionTarget]);
 
 
     // Обработчики завершения видео/аудио
@@ -416,7 +489,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
 
         // Показываем субтитры ТОЛЬКО когда начинается речь
         if (currentEvent?.text) {
-            setSubtitleText(currentEvent.text);
+            setSubtitleText({ text: currentEvent.text, id: ++subtitleCounterRef.current });
             setIsSubtitleVisible(true);
         }
 
@@ -430,7 +503,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             audioRef.current.play().catch(console.error);
         } else {
             console.warn("Нет audioUrl, таймер 3 сек...");
-            setTimeout(() => {
+            setSafeTimeout(() => {
                 handleAudioEnded();
             }, 3000);
         }
@@ -441,10 +514,10 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         isAudioFinishedRef.current = true;
 
         // Даем зрителям дочитать текст (Оставляем на экране после финала речи)
-        setTimeout(() => {
+        setSafeTimeout(() => {
             setIsSubtitleVisible(false);
             // Даем время на плавный fade-out перед очисткой текста
-            setTimeout(() => setSubtitleText(''), 300);
+            setSafeTimeout(() => setSubtitleText({ text: '', id: ++subtitleCounterRef.current }), 300);
         }, 4000); // 4 секунды экстра-времени на чтение
     };
 
@@ -487,6 +560,9 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         console.log('[Player] Emotion AnimEnded');
         setState('idle');
         setActiveEmotionAnim(null);
+        if (currentEvent?.audioUrl) {
+            URL.revokeObjectURL(currentEvent.audioUrl);
+        }
         clearEvent(); // Clear the event since we consumed it
         if (idleRef.current) {
             idleRef.current.currentTime = activeEmotionAnim?.triggerTime || 0;
@@ -509,8 +585,6 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         }
         return getLayerColorFilter(layerColors[layerId], layerId);
     };
-
-    const { bgmFile, bgmVolume, fetchBgmSettings } = usePlayerStore();
 
     useEffect(() => {
         fetchBgmSettings();
@@ -561,7 +635,12 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             {/* SVG фильтры цвета */}
             <svg className="hidden">
                 <defs>
-                    {['transIn', 'talk', 'transOut', ...idleAnimations.map(a => a.id), ...giftAnimations.map(a => a.id)].map((slotId) => {
+                    {Array.from(new Set([
+                        'idle', 'transIn', 'talk', 'transOut',
+                        ...Object.keys(layerColors),
+                        ...idleAnimations.map(a => a.id),
+                        ...giftAnimations.map(a => a.id)
+                    ])).map((slotId) => {
                         const defaultColors = { temperature: 0, tint: 0, hue: 0, saturate: 1, brightness: 1, contrast: 1 };
                         const s = { ...defaultColors, ...(layerColors[slotId] || {}) };
                         const v = s.temperature / 100;
@@ -619,7 +698,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     ref={idleAnimRef}
                     playsInline
                     muted={activeIdleAnim?.isMuted !== false}
-                    className={`absolute inset-0 w-full h-full object-contain transition-none ${currentState === 'idle_anim' ? 'z-25 opacity-100' : 'z-0 opacity-0'}`}
+                    className={`absolute inset-0 w-full h-full object-contain transition-none ${currentState === 'idle_anim' ? 'z-[25] opacity-100' : 'z-0 opacity-0'}`}
                     style={activeIdleAnim ? getLayerStyle(activeIdleAnim.id) : {}}
                     onEnded={() => {
                         console.log('[Player] Idle anim закончен, возврат в Idle');
@@ -637,7 +716,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     ref={giftAnimRef}
                     playsInline
                     muted={currentState === 'emotion_anim' ? (activeEmotionAnim?.isMuted !== false) : (activeGiftAnim?.isMuted !== false)}
-                    className={`absolute inset-0 w-full h-full object-contain transition-none ${((currentState === 'gift_anim' && activeGiftAnim) || currentState === 'emotion_anim') ? 'z-26 opacity-100' : 'z-0 opacity-0'}`}
+                    className={`absolute inset-0 w-full h-full object-contain transition-none ${((currentState === 'gift_anim' && activeGiftAnim) || currentState === 'emotion_anim') ? 'z-[26] opacity-100' : 'z-0 opacity-0'}`}
                     style={(activeGiftAnim || activeEmotionAnim) ? getLayerStyle((activeGiftAnim?.id || activeEmotionAnim?.id)!) : {}}
                     onEnded={() => {
                         if (currentState === 'emotion_anim') {
@@ -693,7 +772,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
                     src="/assets/panic.webm"
                     loop autoPlay muted playsInline
                     style={getLayerStyle('idle')} // Re-use idle color grading or transIn if preferred
-                    className={`absolute inset-0 w-full h-full object-contain transition-opacity duration-300 ${currentState === 'panic' ? 'z-60 opacity-100' : 'z-0 opacity-0 pointer-events-none'}`}
+                    className={`absolute inset-0 w-full h-full object-contain transition-opacity duration-300 ${currentState === 'panic' ? 'z-[60] opacity-100' : 'z-0 opacity-0 pointer-events-none'}`}
                 />
             </div>
 
