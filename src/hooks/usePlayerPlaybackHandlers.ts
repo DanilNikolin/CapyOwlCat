@@ -1,6 +1,7 @@
 import { useRef, MutableRefObject } from 'react';
 import { usePlayerStore, AnimationGroup, EmotionAnimation } from '@/store/usePlayerStore';
 import { useShallow } from 'zustand/react/shallow';
+import { safePlay } from '@/utils/playerHelpers';
 
 interface PlaybackHandlersProps {
     videoRefs: {
@@ -52,12 +53,12 @@ export function usePlayerPlaybackHandlers({
 
         if (videoRefs.talk.current) {
             videoRefs.talk.current.currentTime = 0;
-            videoRefs.talk.current.play().catch(console.error);
+            safePlay(videoRefs.talk.current);
         }
 
         if (audioRef.current && currentEvent?.audioUrl) {
             audioRef.current.src = currentEvent.audioUrl;
-            audioRef.current.play().catch(console.error);
+            safePlay(audioRef.current);
         } else {
             console.warn("Нет audioUrl, таймер 3 сек...");
             setSafeTimeout(() => {
@@ -67,12 +68,16 @@ export function usePlayerPlaybackHandlers({
     };
 
     const handleAudioEnded = () => {
+        if (isAudioFinishedRef.current) return;
+
         console.log('[Player] Audio закончилось. Ждем конца talk loop...');
         isAudioFinishedRef.current = true;
 
         setSafeTimeout(() => {
             uiActions.setIsSubtitleVisible(false);
-            setSafeTimeout(() => uiActions.setSubtitleText({ text: '', id: ++uiActions.subtitleCounterRef.current }), 300);
+            setSafeTimeout(() => {
+                uiActions.setSubtitleText({ text: '', id: ++uiActions.subtitleCounterRef.current });
+            }, 300);
         }, 4000);
     };
 
@@ -83,10 +88,10 @@ export function usePlayerPlaybackHandlers({
 
             if (videoRefs.transOut.current) {
                 videoRefs.transOut.current.currentTime = 0;
-                videoRefs.transOut.current.play().catch(console.error);
+                safePlay(videoRefs.transOut.current);
             }
         } else if (videoRefs.talk.current) {
-            videoRefs.talk.current.play().catch(console.error);
+            safePlay(videoRefs.talk.current);
         }
     };
 
@@ -104,7 +109,7 @@ export function usePlayerPlaybackHandlers({
 
         if (videoRefs.idle.current && activeGroup) {
             videoRefs.idle.current.currentTime = activeGroup.triggerTime;
-            videoRefs.idle.current.play().catch(console.error);
+            safePlay(videoRefs.idle.current);
         }
         setActiveGroup(null);
     };
@@ -112,17 +117,26 @@ export function usePlayerPlaybackHandlers({
     const handleEmotionEnded = () => {
         const { activeEmotionAnimRef, setActiveEmotionAnim } = activeStates;
         const activeEmotionAnim = activeEmotionAnimRef.current;
+
         console.log('[Player] Emotion AnimEnded');
+
         const triggerTime = activeEmotionAnim?.triggerTime || 0;
+
+        uiActions.setIsSubtitleVisible(false);
+        uiActions.setSubtitleText({ text: '', id: ++uiActions.subtitleCounterRef.current });
+
         setState('idle');
         setActiveEmotionAnim(null);
+
         if (currentEvent?.audioUrl) {
             URL.revokeObjectURL(currentEvent.audioUrl);
         }
+
         clearEvent();
+
         if (videoRefs.idle.current) {
             videoRefs.idle.current.currentTime = triggerTime;
-            videoRefs.idle.current.play().catch(console.error);
+            safePlay(videoRefs.idle.current);
         }
     };
 

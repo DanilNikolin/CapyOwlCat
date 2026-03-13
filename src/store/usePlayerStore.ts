@@ -7,6 +7,8 @@ interface StreamEvent {
   text: string;           // Готовый текст ответа
   audioUrl?: string;      // URL аудио для озвучки
   emotionTarget?: string; // Например "angry" (если найдено в тексте)
+  sourceMessage?: IncomingMessage | null;
+  sourceType?: 'viewer' | 'manual' | 'idle';
 }
 
 export interface IncomingMessage {
@@ -177,6 +179,9 @@ interface PlayerStore {
 
   // Сброс эвента после завершения болтовни
   clearEvent: () => void;
+
+  lastActivityAt: number;
+  markActivity: () => void;
 }
 
 export const usePlayerStore = create<PlayerStore>((set, get) => ({
@@ -186,6 +191,7 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   currentEvent: null,
   incomingMessage: null,
   activeGiftItem: null,
+  lastActivityAt: Date.now(),
 
   groups: [],
   idleAnimations: [],
@@ -650,16 +656,31 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
   setThinking: (thinking) => set({ isThinking: thinking }),
   setPanicMode: (panic) => {
     set({ isPanicMode: panic });
-    // Если мы включили панику - сразу обрубаем стейт в panic
+
     if (panic) {
-      set({ currentState: 'panic', currentEvent: null, isThinking: false, giftQueue: [] });
+      set({
+        currentState: 'panic',
+        currentEvent: null,
+        incomingMessage: null,
+        activeGiftItem: null,
+        isThinking: false,
+        giftQueue: []
+      });
     } else {
       set({ currentState: 'idle' });
     }
   },
   triggerEvent: (event) => {
-    if (get().isPanicMode) return;
-    set({ isThinking: false, currentEvent: event });
+    const state = get();
+
+    if (state.isPanicMode) return;
+    if (state.currentEvent) return;
+
+    set({
+      isThinking: false,
+      currentEvent: event,
+      incomingMessage: event.sourceMessage ?? null
+    });
   },
   clearEmotionTarget: () => {
     const { currentEvent } = get();
@@ -668,5 +689,6 @@ export const usePlayerStore = create<PlayerStore>((set, get) => ({
     }
   },
   setIncomingMessage: (msg) => set({ incomingMessage: msg }),
-  clearEvent: () => set({ currentEvent: null, incomingMessage: null })
+  clearEvent: () => set({ currentEvent: null, incomingMessage: null }),
+  markActivity: () => set({ lastActivityAt: Date.now() })
 }));

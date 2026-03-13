@@ -15,16 +15,6 @@ type ChatEvent = {
     };
 };
 
-type GiftEvent = {
-    type: 'gift';
-    timestamp: number;
-    data: {
-        uniqueId: string;
-        giftName: string;
-        giftType: number;
-        repeatEnd?: boolean;
-    };
-};
 type RawTikTokChatEvent = {
     type: 'chat';
     data?: {
@@ -51,7 +41,7 @@ type IncomingMessage =
     | { username: string; text: string; type: 'gift'; giftName: string };
 
 export default function MockTrigger() {
-    const { setThinking, triggerEvent, selectedVoice, fetchVoice, updateVoice, setIncomingMessage, enqueueGift, isPanicMode, setPanicMode } = usePlayerStore();
+    const { setThinking, triggerEvent, selectedVoice, fetchVoice, updateVoice, enqueueGift, isPanicMode, setPanicMode, markActivity } = usePlayerStore();
     const [inputValue, setInputValue] = useState('Testing. Just say hi and hello world and nothing else.');
 
     // Manage Loading State + Ref for setInterval access
@@ -70,7 +60,7 @@ export default function MockTrigger() {
 
     // Queues and Anti-Spam
     const currentWindowRef = useRef<ChatEvent[]>([]);
-    const vipQueueRef = useRef<GiftEvent[]>([]);
+    const pendingChatQueueRef = useRef<ChatEvent[]>([]);
     const spamBlacklistRef = useRef<{ [username: string]: number }>({});
     const userMsgTimestampsRef = useRef<{ [username: string]: number[] }>({});
 
@@ -126,6 +116,11 @@ export default function MockTrigger() {
                 } else {
                     const data = await res.json();
                     if (!data.connected && isTiktokConnected) {
+                        currentWindowRef.current = [];
+                        pendingChatQueueRef.current = [];
+                        spamBlacklistRef.current = {};
+                        userMsgTimestampsRef.current = {};
+
                         setIsTiktokConnected(false);
                         console.log("[TikTok] System reported disconnect.");
                         return;
@@ -149,8 +144,9 @@ export default function MockTrigger() {
                         // Очистка мертвых сообщений "корзины" (старше 15 сек)
                         currentWindowRef.current = currentWindowRef.current.filter(x => now - x.timestamp < 15000);
 
-                        // Очистка мертвых VIP подарков (старше 30 сек)
-                        vipQueueRef.current = vipQueueRef.current.filter(x => now - x.timestamp < 30000);
+                        // Очистка протухших сообщений в pending-очереди (старше 30 сек)
+                        pendingChatQueueRef.current = pendingChatQueueRef.current.filter(x => now - x.timestamp < 30000);
+
 
                         // 2. Сортировка свежих сообщений
                         (data.events as RawTikTokEvent[]).forEach((e) => {
@@ -167,6 +163,7 @@ export default function MockTrigger() {
                                 if (diamonds >= 100 && diamonds < 1000) tier = 'mid';
                                 else if (diamonds >= 1000) tier = 'high';
 
+                                markActivity();
                                 enqueueGift(tier, e.data.uniqueId, e.data.giftName);
 
                                 // VIP-очередь больше не юзаем для подарков, они идут напрямую в плеер.
@@ -180,6 +177,8 @@ export default function MockTrigger() {
                                 // LEVEL 1: Грубый фильтр
                                 if (spamBlacklistRef.current[user]) return; // Юзер в муте
                                 if (cleanText.length === 0) return; // Один мусор (типа пустые эмодзи)
+
+                                markActivity();
 
                                 // Защита от спама (Rate Limit: 4 сообщения за 10 сек)
                                 if (!userMsgTimestampsRef.current[user]) userMsgTimestampsRef.current[user] = [];
@@ -229,26 +228,72 @@ export default function MockTrigger() {
                     }
 
                     // 3. Выбор сообщения и ответ (если Кот свободен!)
-                    const isBusy = isLoadingRef.current || usePlayerStore.getState().isThinking || usePlayerStore.getState().currentState !== 'idle';
+                    const isBusy =
+                        isLoadingRef.current ||
+                        usePlayerStore.getState().isThinking ||
+                        usePlayerStore.getState().currentState !== 'idle' ||
+                        !!usePlayerStore.getState().currentEvent;
 
                     if (!isBusy) {
                         let selectedEvent: ChatEvent | null = null;
-                        const hasChat = currentWindowRef.current.length > 0;
 
-                        if (hasChat) {
+                        // 1. Сначала пробуем взять уже отложенное хорошее сообщение
+                        if (pendingChatQueueRef.current.length > 0) {
+                            selectedEvent = pendingChatQueueRef.current.shift() || null;
+                        } else if (currentWindowRef.current.length > 0) {
+                            // 2. Если отложенной очереди нет — отбираем из живого окна
                             const sortedWindow = [...currentWindowRef.current].sort((a, b) => b.score - a.score);
-
-                            // Берем топ-3 (или меньше) с лучшим скором и рандомим между ними
                             const topCandidates = sortedWindow.slice(0, 3);
-                            selectedEvent = topCandidates[Math.floor(Math.random() * topCandidates.length)];
 
-                            // СЖИГАЕМ ОКНО (Chat clears!)
-                            currentWindowRef.current = [];
+                            selectedEvent = topCandidates[Math.floor(Math.random() * topCandidates.length)] || null;
+
+                            if (selectedEvent) {
+                                // Удаляем выбранное сообщение из окна
+                                currentWindowRef.current = currentWindowRef.current.filter(
+                                    x => !(
+                                        x.timestamp === selectedEvent!.timestamp &&
+                                        x.data.uniqueId === selectedEvent!.data.uniqueId &&
+                                        x.data.comment === selectedEvent!.data.comment
+                                    )
+                                );
+
+                                // Остальные хорошие кандидаты из топа сохраняем на потом, если их там еще нет
+                                for (const candidate of topCandidates) {
+                                    const isSame =
+                                        candidate.timestamp === selectedEvent.timestamp &&
+                                        candidate.data.uniqueId === selectedEvent.data.uniqueId &&
+                                        candidate.data.comment === selectedEvent.data.comment;
+
+                                    if (isSame) continue;
+
+                                    const alreadyQueued = pendingChatQueueRef.current.some(
+                                        q =>
+                                            q.timestamp === candidate.timestamp &&
+                                            q.data.uniqueId === candidate.data.uniqueId &&
+                                            q.data.comment === candidate.data.comment
+                                    );
+
+                                    if (!alreadyQueued) {
+                                        pendingChatQueueRef.current.push(candidate);
+                                    }
+                                }
+
+                                // Не даем pending-очереди забиваться мусором бесконечно
+                                if (pendingChatQueueRef.current.length > 5) {
+                                    pendingChatQueueRef.current = pendingChatQueueRef.current
+                                        .sort((a, b) => b.score - a.score)
+                                        .slice(0, 5);
+                                }
+                            }
                         }
 
                         if (selectedEvent && selectedEvent.type === 'chat') {
                             const prompt = `${selectedEvent.data.uniqueId} asks: ${selectedEvent.data.comment}`;
-                            handleAskGrok(prompt, { username: selectedEvent.data.uniqueId, text: selectedEvent.data.comment, type: 'chat' });
+                            handleAskGrok(prompt, {
+                                username: selectedEvent.data.uniqueId,
+                                text: selectedEvent.data.comment,
+                                type: 'chat'
+                            });
                         }
                     }
                 }
@@ -274,6 +319,36 @@ export default function MockTrigger() {
     }, [isTiktokConnected]);
 
     useEffect(() => {
+        if (!isTiktokConnected) return;
+
+        const interval = setInterval(() => {
+            const state = usePlayerStore.getState();
+            const now = Date.now();
+
+            const isBusy =
+                isLoadingRef.current ||
+                state.isThinking ||
+                state.currentState !== 'idle' ||
+                !!state.currentEvent;
+
+            const hasPendingChat =
+                currentWindowRef.current.length > 0 ||
+                pendingChatQueueRef.current.length > 0;
+
+            const silenceMs = now - state.lastActivityAt;
+
+            if (!state.isPanicMode && !isBusy && !hasPendingChat && silenceMs >= 50000) {
+                handleSystemPrompt(
+                    'idle',
+                    `You are live on stream and the chat has been quiet for a while. This is not a reply to any specific viewer. Say one short, natural, engaging line to wake the audience up and invite interaction. Keep it playful, spontaneous, and stream-friendly. Do not mention being an AI, system prompt, or that you were instructed.`
+                );
+            }
+        }, 5000);
+
+        return () => clearInterval(interval);
+    }, [isTiktokConnected]);
+
+    useEffect(() => {
         fetchVoice();
         // Загружаем список голосов с бэкенда при маунте
         fetch('http://localhost:8000/voices')
@@ -292,12 +367,7 @@ export default function MockTrigger() {
 
         if (!promptToUse.trim() || isLoadingRef.current) return;
 
-        // Если не передали кастомное сообщение (ручной ввод), создаем фейковое
-        if (!customMessage) {
-            setIncomingMessage({ username: "Streamer", text: promptToUse, type: 'chat' });
-        } else {
-            setIncomingMessage(customMessage);
-        }
+        markActivity();
 
         // 1. Бросаем эвент "Думаю" (загорятся лампочки, польется пульс)
         setThinking(true);
@@ -309,7 +379,7 @@ export default function MockTrigger() {
 
             try {
                 // -- Шаг 1. Генерим текст через xAI --
-                const usernameToSend = customMessage ? customMessage.username : "Streamer";
+                const usernameToSend = customMessage ? customMessage.username : "SYSTEM_MANUAL";
 
                 const grokRes = await fetch('/api/grok', {
                     method: 'POST',
@@ -358,6 +428,8 @@ export default function MockTrigger() {
                 text: textReply,
                 audioUrl, // Передаем сгенерированный blob: URL
                 emotionTarget,
+                sourceMessage: customMessage ?? null,
+                sourceType: customMessage ? 'viewer' : 'manual'
             });
 
             // Очищаем инпут после успешного вопроса
@@ -368,7 +440,160 @@ export default function MockTrigger() {
             triggerEvent({
                 text: "Critical pipeline error. The system needs maintenance.",
                 audioUrl: undefined,
+                sourceMessage: customMessage ?? null,
+                sourceType: customMessage ? 'viewer' : 'manual'
             });
+        } finally {
+            setIsLoading(false);
+            setThinking(false);
+        }
+    };
+
+    const handleSystemPrompt = async (mode: 'idle' | 'manual', systemInstruction: string) => {
+        if (usePlayerStore.getState().isPanicMode) return;
+        if (isLoadingRef.current) return;
+
+        markActivity();
+        setThinking(true);
+        setIsLoading(true);
+
+        try {
+            let textReply = "";
+            let emotionTarget: string | undefined = undefined;
+
+            try {
+                const grokRes = await fetch('/api/grok', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: systemInstruction,
+                        username: mode === 'idle' ? 'SYSTEM_IDLE' : 'SYSTEM_MANUAL'
+                    }),
+                });
+
+                if (!grokRes.ok) {
+                    textReply = "So... total silence. That is mildly suspicious.";
+                } else {
+                    const data = await grokRes.json();
+                    textReply = data.reply || "Silence detected. Initiating conversation.";
+                    emotionTarget = data.emotionTarget;
+                    fetchHistory();
+                }
+            } catch (grokErr) {
+                console.error("[MockTrigger] System prompt failed:", grokErr);
+                textReply = "So... nobody has anything to say?";
+            }
+
+            let audioUrl: string | undefined = undefined;
+
+            try {
+                const ttsRes = await fetch("http://localhost:8000/tts", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        text: textReply,
+                        voice: selectedVoice,
+                    }),
+                });
+
+                if (ttsRes.ok) {
+                    const blob = await ttsRes.blob();
+                    audioUrl = URL.createObjectURL(blob);
+                }
+            } catch (err) {
+                console.warn("TTS unavailable for system prompt.", err);
+            }
+
+            triggerEvent({
+                text: textReply,
+                audioUrl,
+                emotionTarget,
+                sourceMessage: {
+                    username: mode === 'idle' ? 'SYSTEM_IDLE' : 'SYSTEM_MANUAL',
+                    text: systemInstruction,
+                    type: 'chat'
+                },
+                sourceType: mode
+            });
+        } catch (error) {
+            console.error("System prompt pipeline error:", error);
+            triggerEvent({
+                text: "Dead air detected. Manual recovery failed.",
+                audioUrl: undefined,
+                sourceMessage: {
+                    username: mode === 'idle' ? 'SYSTEM_IDLE' : 'SYSTEM_MANUAL',
+                    text: systemInstruction,
+                    type: 'chat'
+                },
+                sourceType: mode
+            });
+        } finally {
+            setIsLoading(false);
+            setThinking(false);
+        }
+    };
+
+    const handleManualSpeak = async () => {
+        if (usePlayerStore.getState().isPanicMode) return;
+        if (isLoadingRef.current) return;
+        if (!inputValue.trim()) return;
+
+        markActivity();
+        setThinking(true);
+        setIsLoading(true);
+
+        try {
+            const manualText = inputValue.trim();
+
+            let audioUrl: string | undefined = undefined;
+
+            try {
+                const ttsRes = await fetch("http://localhost:8000/tts", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        text: manualText,
+                        voice: selectedVoice,
+                    }),
+                });
+
+                if (ttsRes.ok) {
+                    const blob = await ttsRes.blob();
+                    audioUrl = URL.createObjectURL(blob);
+                } else {
+                    console.warn(`Manual TTS failed with status ${ttsRes.status}`);
+                }
+            } catch (err) {
+                console.warn("Manual TTS unavailable, falling back to text only.", err);
+            }
+
+            triggerEvent({
+                text: manualText,
+                audioUrl,
+                emotionTarget: undefined,
+                sourceMessage: {
+                    username: 'SYSTEM_MANUAL',
+                    text: manualText,
+                    type: 'chat'
+                },
+                sourceType: 'manual'
+            });
+
+            setInputValue('');
+        } catch (error) {
+            console.error("Manual speak pipeline error:", error);
+            triggerEvent({
+                text: inputValue.trim(),
+                audioUrl: undefined,
+                emotionTarget: undefined,
+                sourceMessage: {
+                    username: 'SYSTEM_MANUAL',
+                    text: inputValue.trim(),
+                    type: 'chat'
+                },
+                sourceType: 'manual'
+            });
+            setInputValue('');
         } finally {
             setIsLoading(false);
             setThinking(false);
@@ -380,6 +605,12 @@ export default function MockTrigger() {
         if (isTiktokConnected) {
             try {
                 await fetch('/api/tiktok', { method: 'DELETE' });
+
+                currentWindowRef.current = [];
+                pendingChatQueueRef.current = [];
+                spamBlacklistRef.current = {};
+                userMsgTimestampsRef.current = {};
+
                 setIsTiktokConnected(false);
                 console.log("[TikTok] Disconnected manually.");
             } catch (err) {
@@ -463,6 +694,15 @@ export default function MockTrigger() {
                 >
                     {isLoading ? 'Thinking...' : 'Ask Grok'}
                 </button>
+
+                <button
+                    onClick={handleManualSpeak}
+                    disabled={isLoading || !inputValue.trim()}
+                    className="flex-1 bg-fuchsia-600 hover:bg-fuchsia-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white text-[10px] font-bold py-2 rounded uppercase tracking-wider transition-colors active:scale-95"
+                >
+                    Manual Say
+                </button>
+
                 <button
                     onClick={async () => {
                         if (!inputValue.trim()) return;
@@ -481,7 +721,7 @@ export default function MockTrigger() {
                                 const blob = await ttsRes.blob();
                                 const audioUrl = URL.createObjectURL(blob);
                                 const audio = new Audio(audioUrl);
-                                audio.onended = () => URL.revokeObjectURL(audioUrl); // Fix Memory Leak
+                                audio.onended = () => URL.revokeObjectURL(audioUrl);
                                 await audio.play();
                             } else {
                                 alert(`TTS failed: ${ttsRes.status}`);

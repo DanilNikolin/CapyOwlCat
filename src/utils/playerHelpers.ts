@@ -120,3 +120,23 @@ export const selectIdleBreakdown = (
     }
     return { animation: null, attemptedTriggerTime: null };
 };
+
+/**
+ * Safely plays a video or audio element, ignoring AbortError.
+ */
+export const safePlay = (el: HTMLMediaElement | null) => {
+    if (!el) return;
+    
+    // Some browsers/environments might have play returning void, 
+    // but modern ones return a Promise.
+    const promise = el.play();
+    if (promise !== undefined) {
+        promise.catch((error) => {
+            if (error.name === 'AbortError') {
+                // Ignore AbortError as it's usually just a play/pause race condition
+                return;
+            }
+            console.error('[safePlay] Playback failed:', error);
+        });
+    }
+};

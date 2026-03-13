@@ -16,5 +16,122 @@
     "minCombo": 1,
     "isPriority": false,
     "isMuted": false
+  },
+  {
+    "id": "giftanim_1773320962846",
+    "triggerTime": 9.22,
+    "video": "giftanim_1773320962846.webm",
+    "targetTier": "low",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773321857372",
+    "triggerTime": 13.14,
+    "video": "giftanim_1773321857372.webm",
+    "targetTier": "low",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773322327330",
+    "triggerTime": 18,
+    "video": "giftanim_1773322327330.webm",
+    "targetTier": "low",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773325470256",
+    "triggerTime": 18,
+    "video": "giftanim_1773325470256.webm",
+    "targetTier": "mid",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773326365387",
+    "triggerTime": 13.14,
+    "video": "giftanim_1773326365387.webm",
+    "targetTier": "mid",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773327190348",
+    "triggerTime": 9.22,
+    "video": "giftanim_1773327190348.webm",
+    "targetTier": "mid",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773327639369",
+    "triggerTime": 5.13,
+    "video": "giftanim_1773327639369.webm",
+    "targetTier": "mid",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773330889760",
+    "triggerTime": 0.04,
+    "video": "giftanim_1773330889760.webm",
+    "targetTier": "mid",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773384428834",
+    "triggerTime": 0.04,
+    "video": "giftanim_1773384428834.webm",
+    "targetTier": "high",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773385976005",
+    "triggerTime": 5.13,
+    "video": "giftanim_1773385976005.webm",
+    "targetTier": "high",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773386500561",
+    "triggerTime": 9.22,
+    "video": "giftanim_1773386500561.webm",
+    "targetTier": "high",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773391795232",
+    "triggerTime": 13.14,
+    "video": "giftanim_1773391795232.webm",
+    "targetTier": "high",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
+  },
+  {
+    "id": "giftanim_1773392224951",
+    "triggerTime": 18,
+    "video": "giftanim_1773392224951.webm",
+    "targetTier": "high",
+    "minCombo": 1,
+    "isPriority": false,
+    "isMuted": false
   }
 ]

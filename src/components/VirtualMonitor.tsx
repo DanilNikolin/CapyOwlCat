@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { usePlayerStore } from '@/store/usePlayerStore';
 import { useShallow } from 'zustand/react/shallow';
 import { getTransformMatrix } from '@/utils/math';
-import { Cpu, Radio, Volume2, Waves, Gift } from 'lucide-react'; // Массивные иконки
+import { Radio, Volume2, Waves, Gift } from 'lucide-react'; // Массивные иконки
 
 const IDLE_MESSAGES = [
     "[ STATUS: LISTENING ]",
@@ -14,12 +14,13 @@ const IDLE_MESSAGES = [
 ];
 
 export default function VirtualMonitor() {
-    const { monitorConfig, isThinking, currentState, incomingMessage, activeGiftItem } = usePlayerStore(useShallow(state => ({
+    const { monitorConfig, isThinking, currentState, incomingMessage, activeGiftItem, currentEvent } = usePlayerStore(useShallow(state => ({
         monitorConfig: state.monitorConfig,
         isThinking: state.isThinking,
         currentState: state.currentState,
         incomingMessage: state.incomingMessage,
-        activeGiftItem: state.activeGiftItem
+        activeGiftItem: state.activeGiftItem,
+        currentEvent: state.currentEvent
     })));
 
     // We can add some internal rotating logic or states here if needed
@@ -51,7 +52,16 @@ export default function VirtualMonitor() {
         blX, blY
     ).join(',');
 
-    const isProcessing = isThinking || currentState === 'trans_in';
+    const isProcessing =
+        isThinking ||
+        currentState === 'trans_in' ||
+        (
+            !!currentEvent &&
+            currentState !== 'talk' &&
+            currentState !== 'trans_out' &&
+            currentState !== 'emotion_anim' &&
+            currentState !== 'gift_anim'
+        );
 
     return (
         <div
@@ -81,15 +91,32 @@ export default function VirtualMonitor() {
                 <div className="flex-1 flex flex-col items-center justify-center text-center">
 
                     {isProcessing ? (
-                        /* STATE: GROK THINKING / TRANS_IN */
+                        /* STATE: MESSAGE DECODE / RESPONSE PREP */
                         <div className="flex flex-col items-center gap-4 text-[#00f0ff]">
-                            <div className="relative">
-                                <Cpu className="w-16 h-16 md:w-20 md:h-20 text-[#00f0ff] animate-pulse drop-shadow-[0_0_15px_rgba(0,240,255,0.8)]" strokeWidth={1} />
-                                <div className="absolute inset-0 bg-[#00f0ff]/20 animate-ping rounded-full mix-blend-screen" />
+                            <div className="relative flex items-center justify-center">
+                                <div className="absolute w-24 h-24 md:w-28 md:h-28 rounded-full border border-[#00f0ff]/25 animate-ping" />
+                                <div className="absolute w-32 h-32 md:w-36 md:h-36 rounded-full border border-[#00f0ff]/15 animate-[pulse_2s_infinite]" />
+                                <Radio
+                                    className="w-16 h-16 md:w-20 md:h-20 text-[#00f0ff] drop-shadow-[0_0_15px_rgba(0,240,255,0.8)] animate-pulse relative z-10"
+                                    strokeWidth={1.5}
+                                />
                             </div>
-                            <span className="font-bold tracking-widest uppercase text-sm md:text-base drop-shadow-[0_0_10px_rgba(0,240,255,1)]">
-                                INCOMING DATA...
-                            </span>
+
+                            <div className="flex flex-col items-center gap-2">
+                                <span className="font-bold tracking-widest uppercase text-sm md:text-base drop-shadow-[0_0_10px_rgba(0,240,255,1)]">
+                                    DECODING MESSAGE...
+                                </span>
+
+                                <div className="flex gap-1 items-center h-3">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-pulse" />
+                                    <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-pulse [animation-delay:0.2s]" />
+                                    <span className="w-1.5 h-1.5 rounded-full bg-[#00f0ff] animate-pulse [animation-delay:0.4s]" />
+                                </div>
+
+                                <span className="text-[10px] md:text-xs uppercase tracking-[0.25em] text-[#00f0ff]/60">
+                                    SIGNAL LOCK ACTIVE
+                                </span>
+                            </div>
                         </div>
                     ) : currentState === 'talk' ? (
                         /* STATE: TALKING (AUDIO PLAYBACK) */

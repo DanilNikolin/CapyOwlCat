@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { usePlayerStore, AnimationGroup, IdleAnimation, GiftAnimation, EmotionAnimation } from '@/store/usePlayerStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useTypewriter } from '@/hooks/useTypewriter';
+import { safePlay } from '@/utils/playerHelpers';
 import VirtualMonitor from './VirtualMonitor';
 import { usePlayerPlaybackHandlers } from '@/hooks/usePlayerPlaybackHandlers';
 import { usePlayerTimelineEngine } from '@/hooks/usePlayerTimelineEngine';
@@ -207,7 +208,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
         setActiveIdleAnim(null);
         if (idleRef.current) {
             idleRef.current.currentTime = triggerTime;
-            idleRef.current.play().catch(console.error);
+            safePlay(idleRef.current);
         }
     };
 
@@ -222,7 +223,7 @@ export default function StreamerPlayer({ isEditorMode = false }: StreamerPlayerP
             if (!isPriority) {
                 idleRef.current.currentTime = triggerTime;
             }
-            idleRef.current.play().catch(console.error);
+            safePlay(idleRef.current);
         }
     };
 

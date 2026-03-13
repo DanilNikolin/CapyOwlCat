@@ -13,8 +13,10 @@ import {
     findBestGiftAnimation,
     findClosestEmotionAnimation,
     findClosestConversationGroup,
-    selectIdleBreakdown
+    selectIdleBreakdown,
+    safePlay
 } from '@/utils/playerHelpers';
+import { useRef } from 'react';
 
 interface TimelineEngineProps {
     videoRefs: {
@@ -78,7 +80,14 @@ export function usePlayerTimelineEngine({
         clearEmotionTarget: state.clearEmotionTarget
     })));
 
+    const transitionLockRef = useRef(false);
+
     useEffect(() => {
+        // Reset lock when state is not idle
+        if (currentState !== 'idle') {
+            transitionLockRef.current = false;
+        }
+
         let animationFrameId: number;
 
         const checkTime = () => {
@@ -109,6 +118,7 @@ export function usePlayerTimelineEngine({
                 if (activeStates.pendingIdleAnimRef.current) activeStates.setPendingIdleAnim(null);
                 if (activeStates.activeGroupRef.current) activeStates.setActiveGroup(null);
 
+
                 const targetGift = giftQueue[0];
                 let bestAnim: GiftAnimation | null = null;
 
@@ -118,6 +128,7 @@ export function usePlayerTimelineEngine({
 
                 if (bestAnim) {
                     if (bestAnim.isPriority) {
+                        if (transitionLockRef.current) return;
                         console.log(`[Player] Priority Gift Trigger! ${bestAnim.id}`);
                         idleVideo.pause();
                         setState('gift_anim');
@@ -128,8 +139,9 @@ export function usePlayerTimelineEngine({
                         if (giftAnimVideo) {
                             giftAnimVideo.src = `/assets/${bestAnim.video}`;
                             giftAnimVideo.currentTime = 0;
-                            giftAnimVideo.play().catch(console.error);
+                            safePlay(giftAnimVideo);
                         }
+                        transitionLockRef.current = true;
                         return;
                     } else {
                         if (giftAnimVideo && !giftAnimVideo.src.endsWith(bestAnim.video)) {
@@ -139,6 +151,7 @@ export function usePlayerTimelineEngine({
                         }
 
                         if (hasCrossed(bestAnim.triggerTime)) {
+                            if (transitionLockRef.current) return;
                             console.log(`[Player] Normal Gift Trigger @${bestAnim.triggerTime}s! ${bestAnim.id}`);
                             idleVideo.pause();
                             setState('gift_anim');
@@ -148,12 +161,14 @@ export function usePlayerTimelineEngine({
 
                             if (giftAnimVideo) {
                                 giftAnimVideo.currentTime = 0;
-                                giftAnimVideo.play().catch(console.error);
+                                safePlay(giftAnimVideo);
                             }
+                            transitionLockRef.current = true;
                             return;
                         }
                     }
                 } else {
+                    if (transitionLockRef.current) return;
                     console.log(`[Player] No exact video found for tier '${targetGift.tier}'. Fallback monitor.`);
                     idleVideo.pause();
                     setState('gift_anim');
@@ -167,9 +182,10 @@ export function usePlayerTimelineEngine({
                             state.setState('idle');
                             activeStates.setActiveGiftItem(null);
                             activeStates.setActiveGiftAnim(null);
-                            if (videoRefs.idle.current) videoRefs.idle.current.play().catch(console.error);
+                            if (videoRefs.idle.current) safePlay(videoRefs.idle.current);
                         }
                     }, 4000);
+                    transitionLockRef.current = true;
                     return;
                 }
 
@@ -196,6 +212,7 @@ export function usePlayerTimelineEngine({
                         }
 
                         if (hasCrossed(closestAnim.triggerTime)) {
+                            if (transitionLockRef.current) return;
                             idleVideo.pause();
                             setState('emotion_anim');
                             activeStates.setActiveEmotionAnim(closestAnim);
@@ -203,12 +220,13 @@ export function usePlayerTimelineEngine({
                             uiActions.setIsSubtitleVisible(true);
                             if (giftAnimVideo) {
                                 giftAnimVideo.currentTime = 0;
-                                giftAnimVideo.play().catch(console.error);
+                                safePlay(giftAnimVideo);
                             }
                             if (audioRef.current && currentEvent.audioUrl) {
                                 audioRef.current.src = currentEvent.audioUrl;
-                                audioRef.current.play().catch(console.error);
+                                safePlay(audioRef.current);
                             }
+                            transitionLockRef.current = true;
                             return;
                         }
                     } else {
@@ -230,12 +248,14 @@ export function usePlayerTimelineEngine({
                         }
                     } else {
                         if (hasCrossed(activeStates.activeGroupRef.current.triggerTime)) {
+                            if (transitionLockRef.current) return;
                             idleVideo.pause();
                             setState('trans_in');
                             if (transInVideo) {
                                 transInVideo.currentTime = 0;
-                                transInVideo.play().catch(console.error);
+                                safePlay(transInVideo);
                             }
+                            transitionLockRef.current = true;
                             return;
                         }
                     }
@@ -266,14 +286,16 @@ export function usePlayerTimelineEngine({
                 if (activeStates.pendingIdleAnimRef.current) {
                     const pending = activeStates.pendingIdleAnimRef.current;
                     if (hasCrossed(pending.triggerTime)) {
+                        if (transitionLockRef.current) return;
                         activeStates.setActiveIdleAnim(pending);
                         activeStates.setPendingIdleAnim(null);
                         idleVideo.pause();
                         setState('idle_anim');
                         if (idleAnimVideo) {
                             idleAnimVideo.currentTime = 0;
-                            idleAnimVideo.play().catch(console.error);
+                            safePlay(idleAnimVideo);
                         }
+                        transitionLockRef.current = true;
                         return;
                     } else if (now > pending.triggerTime + 0.3) {
                         activeStates.setPendingIdleAnim(null);
