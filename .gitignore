@@ -30,6 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# Python / local TTS
+__pycache__/
+*.py[cod]
+tts-service/.venv/
+tts-service/out.txt
+
 # env files (can opt-in for committing if needed)
 .env*
 
